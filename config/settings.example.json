@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "profile_dir": ".local/commercial-seller-browser",
+  "output_root": "data/commercial-drafts",
+  "target": {
+    "category_id": null,
+    "category_name": null,
+    "store_identity_text": null,
+    "shipping_address": null,
+    "freight_template_text": null,
+    "delivery_promise": null,
+    "package_weight_grams": null
+  },
+  "quality": {
+    "max_title_chars": 60,
+    "min_main_images": 1,
+    "max_main_images": 4,
+    "require_detail_images": true,
+    "max_image_bytes": 5242880,
+    "min_image_width": 800,
+    "min_image_height": 800,
+    "min_detail_width": 300,
+    "min_detail_height": 100
+  },
+  "category_rules": {
+    "by_category": {}
+  }
+}
