@@ -1860,10 +1860,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("data/draft-transfer-validation"))
     parser.add_argument("--category-id", required=True)
     parser.add_argument("--store-identity-text", required=True)
-    parser.add_argument("--shipping-address", required=True)
-    parser.add_argument("--freight-template-text", required=True)
-    parser.add_argument("--delivery-promise", required=True)
-    parser.add_argument("--package-weight-grams", type=int, required=True)
+    parser.add_argument("--shipping-address", default="")
+    parser.add_argument("--freight-template-text", default="")
+    parser.add_argument("--delivery-promise", default="")
+    parser.add_argument("--package-weight-grams", type=int)
     parser.add_argument("--category-rules", type=Path, required=True)
     parser.add_argument("--preview-only", action="store_true")
     parser.add_argument("--save-draft", action="store_true")
@@ -2149,20 +2149,33 @@ def main(argv: list[str] | None = None) -> int:
 
         # The source explicitly promises 48-hour dispatch. Select that exact
         # value from the seller form; do not fall back to the first option.
-        selected = fill_buyer_protection_delivery(page, args.delivery_promise)
+        selected = (
+            fill_buyer_protection_delivery(page, args.delivery_promise)
+            if args.delivery_promise else None
+        )
         report["fields"]["delivery_time"] = selected or None
-        if not selected:
+        if args.delivery_promise and not selected:
             report.setdefault("warnings", []).append(
                 f"delivery time {args.delivery_promise} is unavailable in the seller account"
             )
-        elif _compact_text(args.delivery_promise) not in _compact_text(selected):
+        elif args.delivery_promise and _compact_text(args.delivery_promise) not in _compact_text(selected):
             report.setdefault("warnings", []).append(
                 f"{args.delivery_promise} unavailable; selected platform option {selected}"
             )
-        report["fields"]["shipping_address"] = fill_shipping_address(page, args.shipping_address)
-        report["fields"]["freight_template"] = fill_freight_template(page, args.freight_template_text)
-        report["fields"]["package_dimensions"] = fill_default_package_weight(page, args.package_weight_grams)
-        if report["fields"]["package_dimensions"]["status"] != "filled":
+        report["fields"]["shipping_address"] = (
+            fill_shipping_address(page, args.shipping_address)
+            if args.shipping_address else {"status": "skipped", "reason": "not_configured"}
+        )
+        report["fields"]["freight_template"] = (
+            fill_freight_template(page, args.freight_template_text)
+            if args.freight_template_text else {"status": "skipped", "reason": "not_configured"}
+        )
+        report["fields"]["package_dimensions"] = (
+            fill_default_package_weight(page, args.package_weight_grams)
+            if args.package_weight_grams is not None else {"status": "skipped", "reason": "not_configured"}
+        )
+        if (args.package_weight_grams is not None
+                and report["fields"]["package_dimensions"]["status"] != "filled"):
             report.setdefault("warnings", []).append("件重尺默认重量未能写入规格行")
 
         source_detail_paths = detail_asset_paths
@@ -2229,12 +2242,16 @@ def main(argv: list[str] | None = None) -> int:
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
-            runtime_configuration_ok = (
-                report["fields"].get("shipping_address", {}).get("status") == "selected"
-                and report["fields"].get("freight_template", {}).get("status") == "selected"
-                and _compact_text(args.delivery_promise) in _compact_text(report["fields"].get("delivery_time"))
-                and report["fields"].get("package_dimensions", {}).get("status") == "filled"
-            )
+            runtime_configuration_ok = all((
+                not args.shipping_address
+                or report["fields"].get("shipping_address", {}).get("status") == "selected",
+                not args.freight_template_text
+                or report["fields"].get("freight_template", {}).get("status") == "selected",
+                not args.delivery_promise
+                or _compact_text(args.delivery_promise) in _compact_text(report["fields"].get("delivery_time")),
+                args.package_weight_grams is None
+                or report["fields"].get("package_dimensions", {}).get("status") == "filled",
+            ))
             if not runtime_configuration_ok:
                 report["result"] = "blocked_runtime_store_configuration"
                 report.setdefault("warnings", []).append("店铺物流配置未完整回显，已阻止保存草稿")
@@ -2425,18 +2442,29 @@ def main(argv: list[str] | None = None) -> int:
                     bool(item.get("displayed")) and report.get("attributes_after_reopen", {}).get(prop_id) == item.get("displayed")
                     for prop_id, item in (report["fields"].get("attributes") or {}).items() if isinstance(item, dict)
                 ),
-                "shipping_address": _compact_text(args.shipping_address)
-                    in _compact_text(reopened.get("shipping_address_value")),
-                "delivery_time": _compact_text(args.delivery_promise)
-                    in _compact_text(reopened.get("delivery_time_value")),
-                "freight_template": _compact_text(args.freight_template_text)
-                    in _compact_text(reopened.get("freight_template_value")),
-                "sku_rows": len(weights) == expected_skus,
-                "package_weights": len(weights) == expected_skus and all(
-                    len(row) >= 4 and str(row[3]) == str(args.package_weight_grams) for row in weights
-                ),
                 "publish_not_clicked": not read_publish_guard_events(page),
             }
+            optional_reopen_checks = {
+                "shipping_address": (
+                    not args.shipping_address
+                    or _compact_text(args.shipping_address) in _compact_text(reopened.get("shipping_address_value"))
+                ),
+                "delivery_time": (
+                    not args.delivery_promise
+                    or _compact_text(args.delivery_promise) in _compact_text(reopened.get("delivery_time_value"))
+                ),
+                "freight_template": (
+                    not args.freight_template_text
+                    or _compact_text(args.freight_template_text) in _compact_text(reopened.get("freight_template_value"))
+                ),
+                "package_weights": (
+                    args.package_weight_grams is None
+                    or (len(weights) == expected_skus and all(
+                        len(row) >= 4 and str(row[3]) == str(args.package_weight_grams) for row in weights
+                    ))
+                ),
+            }
+            report["field_reopen_checks"].update(optional_reopen_checks)
             report["result"] = (
                 "draft_saved_and_reopened_verified"
                 if report["draft_list_contains_title"]

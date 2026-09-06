@@ -92,15 +92,12 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
         issues.append("未确认目标叶子类目 category_id")
     if not str(target.store_identity_text or "").strip():
         issues.append("未配置店铺身份校验文本")
-    if not str(target.shipping_address or "").strip():
-        issues.append("未配置发货地址")
-    if not str(target.freight_template_text or "").strip():
-        issues.append("未配置运费模板")
-    if not str(target.delivery_promise or "").strip():
-        issues.append("未配置发货承诺")
-    if (isinstance(target.package_weight_grams, bool) or not isinstance(target.package_weight_grams, int)
-            or not 0 < target.package_weight_grams <= 1_000_000):
-        issues.append("未配置有效包裹重量")
+    if target.package_weight_grams is not None and (
+        isinstance(target.package_weight_grams, bool)
+        or not isinstance(target.package_weight_grams, int)
+        or not 0 < target.package_weight_grams <= 1_000_000
+    ):
+        issues.append("包裹重量必须是有效正整数")
     main_paths, main_issues = _saved_paths(product_path, product, "assets")
     detail_paths, detail_issues = _saved_paths(product_path, product, "detail_assets")
     issues.extend(main_issues + detail_issues)

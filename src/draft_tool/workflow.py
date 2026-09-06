@@ -38,14 +38,19 @@ def run_save_draft(
         "--output-dir", str(output_dir.resolve()),
         "--category-id", str(target.category_id),
         "--store-identity-text", str(target.store_identity_text),
-        "--shipping-address", str(target.shipping_address),
-        "--freight-template-text", str(target.freight_template_text),
-        "--delivery-promise", str(target.delivery_promise),
-        "--package-weight-grams", str(target.package_weight_grams),
         "--category-rules", str(rules_path.resolve()),
         "--keep-open" if keep_open else "",
         "--preview-only" if preview_only else "--save-draft",
     ]
+    optional_args = (
+        ("--shipping-address", target.shipping_address),
+        ("--freight-template-text", target.freight_template_text),
+        ("--delivery-promise", target.delivery_promise),
+        ("--package-weight-grams", target.package_weight_grams),
+    )
+    for option, value in optional_args:
+        if value is not None and str(value).strip():
+            argv.extend([option, str(value).strip()])
     try:
         with profile_lock(config.profile_dir):
             existing = ledger.get(store_identity, offer_id)

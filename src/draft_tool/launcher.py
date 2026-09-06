@@ -52,10 +52,10 @@ class ConfigDialog(tk.Toplevel):
         ("category_id", "叶子类目 ID"),
         ("category_name", "类目名称"),
         ("store_identity_text", "店铺识别文本"),
-        ("shipping_address", "发货地址匹配文本"),
-        ("freight_template_text", "运费模板名称"),
-        ("delivery_promise", "发货承诺"),
-        ("package_weight_grams", "包裹重量（克）"),
+        ("shipping_address", "发货地址匹配文本（可选）"),
+        ("freight_template_text", "运费模板名称（可选）"),
+        ("delivery_promise", "发货承诺（可选）"),
+        ("package_weight_grams", "包裹重量（克，可选）"),
     )
 
     def __init__(self, parent: tk.Misc, config_path: Path, on_saved: Callable[[], None]):

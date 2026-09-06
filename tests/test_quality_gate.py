@@ -45,6 +45,14 @@ class QualityGateTests(unittest.TestCase):
             self.assertFalse(result["passed"])
             self.assertIn("未确认目标叶子类目 category_id", result["issues"])
 
+    def test_optional_logistics_configuration_does_not_block(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = TargetConfig(
+                category_id="100", category_name="玩具", store_identity_text="测试店铺"
+            )
+            result = validate_product(self.make_product(Path(folder)), target, QualityConfig())
+            self.assertTrue(result["passed"], result["issues"])
+
     def test_long_title_is_not_silently_truncated(self):
         with tempfile.TemporaryDirectory() as folder:
             path = self.make_product(Path(folder))
