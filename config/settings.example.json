@@ -20,7 +20,8 @@
     "min_image_width": 800,
     "min_image_height": 800,
     "min_detail_width": 300,
-    "min_detail_height": 100
+    "min_detail_height": 100,
+    "max_image_pixels": 40000000
   },
   "category_rules": {
     "by_category": {}

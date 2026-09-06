@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .security import atomic_write
+
 
 @dataclass(frozen=True)
 class TargetConfig:
@@ -28,6 +30,7 @@ class QualityConfig:
     min_image_height: int = 800
     min_detail_width: int = 300
     min_detail_height: int = 100
+    max_image_pixels: int = 40_000_000
 
 
 @dataclass(frozen=True)
@@ -46,12 +49,21 @@ class AppConfig:
             raise ValueError("配置文件必须是 JSON 对象")
         target = payload.get("target") or {}
         quality = payload.get("quality") or {}
+        if not isinstance(target, dict) or not isinstance(quality, dict):
+            raise ValueError("target 和 quality 必须是 JSON 对象")
+        unknown_target = set(target) - set(TargetConfig.__dataclass_fields__)
+        unknown_quality = set(quality) - set(QualityConfig.__dataclass_fields__)
+        if unknown_target or unknown_quality:
+            raise ValueError(f"配置包含未知字段: {sorted(unknown_target | unknown_quality)}")
         project_root = path.parent.parent if path.parent.name.lower() == "config" else path.parent
         profile_dir = Path(payload.get("profile_dir", ".local/commercial-seller-browser"))
         output_root = Path(payload.get("output_root", "data/commercial-drafts"))
-        return cls(
+        instance = cls(
             version=int(payload.get("version", 1)),
-            target=TargetConfig(**{key: target.get(key) for key in TargetConfig.__dataclass_fields__}),
+            target=TargetConfig(**{
+                key: (target.get(key).strip() if isinstance(target.get(key), str) else target.get(key))
+                for key in TargetConfig.__dataclass_fields__
+            }),
             quality=QualityConfig(**{
                 key: quality.get(key, getattr(QualityConfig(), key))
                 for key in QualityConfig.__dataclass_fields__
@@ -60,12 +72,33 @@ class AppConfig:
             output_root=output_root if output_root.is_absolute() else project_root / output_root,
             category_rules=dict(payload.get("category_rules") or {}),
         )
+        numeric_quality = {
+            key: getattr(instance.quality, key)
+            for key in QualityConfig.__dataclass_fields__
+            if key != "require_detail_images"
+        }
+        if not isinstance(instance.quality.require_detail_images, bool):
+            raise ValueError("quality.require_detail_images 必须是布尔值")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in numeric_quality.values()):
+            raise ValueError("quality 数值配置必须为正整数")
+        if instance.quality.min_main_images > instance.quality.max_main_images:
+            raise ValueError("min_main_images 不能大于 max_main_images")
+        if instance.target.package_weight_grams is not None:
+            try:
+                weight = int(instance.target.package_weight_grams)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("package_weight_grams 必须是正整数") from exc
+            if weight <= 0 or weight > 1_000_000:
+                raise ValueError("package_weight_grams 超出有效范围")
+            object.__setattr__(instance.target, "package_weight_grams", weight)
+        return instance
 
     def effective_target(self, overrides: dict[str, Any]) -> TargetConfig:
         values = {
             key: overrides.get(key) if overrides.get(key) not in (None, "") else getattr(self.target, key)
             for key in TargetConfig.__dataclass_fields__
         }
+        values = {key: value.strip() if isinstance(value, str) else value for key, value in values.items()}
         if values["package_weight_grams"] is not None:
             values["package_weight_grams"] = int(values["package_weight_grams"])
         return TargetConfig(**values)
@@ -79,7 +112,7 @@ class AppConfig:
     def write_runtime_record(self, output_dir: Path, target: TargetConfig) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / "runtime-config.json"
-        path.write_text(json.dumps({
+        atomic_write(path, json.dumps({
             "config_version": self.version,
             "target": {
                 "category_id": target.category_id,
@@ -91,5 +124,5 @@ class AppConfig:
                 "package_weight_grams": target.package_weight_grams,
             },
             "category_rules": self.rules_for(target.category_id),
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        }, ensure_ascii=False, indent=2))
         return path

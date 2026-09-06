@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from decimal import Decimal, InvalidOperation
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -9,14 +11,22 @@ from PIL import Image
 
 from .config import QualityConfig, TargetConfig
 from .sku_adapter import normalize_sku_model
+from .security import atomic_write
 
 
-def _resolve_asset_path(product_path: Path, raw: Path) -> Path | None:
-    if raw.is_absolute() and raw.is_file():
-        return raw.resolve()
-    candidates = [Path.cwd() / raw, product_path.parent / raw]
-    candidates.extend(parent / raw for parent in product_path.parents)
-    return next((item.resolve() for item in candidates if item.is_file()), None)
+def _resolve_asset_path(product_path: Path, raw: Path, directory: str) -> Path | None:
+    if raw.is_absolute() or not raw.parts or ".." in raw.parts:
+        return None
+    root = (product_path.parent / directory).resolve()
+    lexical = product_path.parent / raw
+    if lexical.is_symlink():
+        return None
+    candidate = lexical.resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 def _saved_paths(product_path: Path, product: dict[str, Any], key: str) -> tuple[list[Path], list[str]]:
@@ -26,11 +36,12 @@ def _saved_paths(product_path: Path, product: dict[str, Any], key: str) -> tuple
         if not isinstance(item, dict) or item.get("status") != "saved":
             continue
         raw = Path(str(item.get("path") or ""))
-        candidate = _resolve_asset_path(product_path, raw)
+        directory = "assets" if key == "assets" else "detail-assets"
+        candidate = _resolve_asset_path(product_path, raw, directory)
         if candidate:
             paths.append(candidate)
         else:
-            issues.append(f"素材不存在: {raw}")
+            issues.append(f"素材路径越界、为符号链接或不存在: {raw}")
     return paths, issues
 
 
@@ -43,6 +54,8 @@ def _check_images(paths: list[Path], quality: QualityConfig, label: str, min_wid
             if path.stat().st_size > quality.max_image_bytes:
                 reasons.append("超过大小限制")
             with Image.open(path) as image:
+                if image.width * image.height > quality.max_image_pixels:
+                    reasons.append("像素总量超过限制")
                 if image.format not in {"JPEG", "PNG", "WEBP"}:
                     reasons.append("格式不支持")
                 if image.width < min_width or image.height < min_height:
@@ -75,17 +88,18 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
         issues.append(f"标题超过 {quality.max_title_chars} 字符，禁止静默截断")
     if not bool((product.get("validation") or {}).get("passed")):
         issues.append("采集结果 validation.passed=false")
-    if not target.category_id:
+    if not str(target.category_id or "").strip():
         issues.append("未确认目标叶子类目 category_id")
-    if not target.store_identity_text:
+    if not str(target.store_identity_text or "").strip():
         issues.append("未配置店铺身份校验文本")
-    if not target.shipping_address:
+    if not str(target.shipping_address or "").strip():
         issues.append("未配置发货地址")
-    if not target.freight_template_text:
+    if not str(target.freight_template_text or "").strip():
         issues.append("未配置运费模板")
-    if not target.delivery_promise:
+    if not str(target.delivery_promise or "").strip():
         issues.append("未配置发货承诺")
-    if not target.package_weight_grams or target.package_weight_grams <= 0:
+    if (isinstance(target.package_weight_grams, bool) or not isinstance(target.package_weight_grams, int)
+            or not 0 < target.package_weight_grams <= 1_000_000):
         issues.append("未配置有效包裹重量")
     main_paths, main_issues = _saved_paths(product_path, product, "assets")
     detail_paths, detail_issues = _saved_paths(product_path, product, "detail_assets")
@@ -105,8 +119,9 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
         issues.append("缺少详情图")
     price = (product.get("price") or {}).get("primary")
     try:
-        valid_price = price is not None and float(price or 0) > 0
-    except (TypeError, ValueError):
+        parsed_price = Decimal(str(price).strip())
+        valid_price = parsed_price.is_finite() and Decimal("0") < parsed_price <= Decimal("99999999.99")
+    except (InvalidOperation, ValueError, AttributeError):
         valid_price = False
     if not valid_price:
         issues.append("主价格必须大于 0")
@@ -115,12 +130,14 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
         issues.extend(str(item) for item in sku_model.get("warnings") or [])
     if sku_model.get("warnings"):
         warnings.extend(str(item) for item in sku_model["warnings"])
+    raw_stock = (product.get("stock") or {}).get("total_observed")
     try:
-        total_stock = int((product.get("stock") or {}).get("total_observed") or 0)
-    except (TypeError, ValueError):
-        total_stock = -1
-    if not sku_model.get("source_count") and total_stock < 0:
-        issues.append("库存不能为负数")
+        total_stock = Decimal(str(raw_stock).strip())
+        valid_stock = total_stock.is_finite() and total_stock == total_stock.to_integral_value() and 0 <= total_stock <= 2_147_483_647
+    except (InvalidOperation, ValueError, AttributeError):
+        valid_stock = False
+    if (raw_stock is not None or not sku_model.get("source_count")) and not valid_stock:
+        issues.append("库存必须是范围内的非负整数")
     return {
         "passed": not issues,
         "issues": list(dict.fromkeys(issues)),
@@ -137,14 +154,19 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
 
 
 def write_runtime_product(product_path: Path, output_path: Path) -> Path:
-    """Write a run-local manifest with absolute asset paths for launcher-safe execution."""
+    """Copy approved assets into the run and write a self-contained manifest."""
     product = json.loads(product_path.read_text(encoding="utf-8"))
     for key in ("assets", "detail_assets"):
+        directory = "assets" if key == "assets" else "detail-assets"
+        target_dir = output_path.parent / directory
+        target_dir.mkdir(parents=True, exist_ok=True)
         for item in product.get(key) or []:
             if not isinstance(item, dict) or item.get("status") != "saved":
                 continue
-            resolved = _resolve_asset_path(product_path, Path(str(item.get("path") or "")))
+            resolved = _resolve_asset_path(product_path, Path(str(item.get("path") or "")), directory)
             if resolved:
-                item["path"] = str(resolved)
-    output_path.write_text(json.dumps(product, ensure_ascii=False, indent=2), encoding="utf-8")
+                destination = target_dir / resolved.name
+                shutil.copyfile(resolved, destination)
+                item["path"] = str(Path(directory) / destination.name)
+    atomic_write(output_path, json.dumps(product, ensure_ascii=False, indent=2))
     return output_path

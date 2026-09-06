@@ -11,8 +11,10 @@ from draft_tool.quality_gate import validate_product
 
 class QualityGateTests(unittest.TestCase):
     def make_product(self, root: Path) -> Path:
-        main = root / "main.jpg"
-        detail = root / "detail.jpg"
+        (root / "assets").mkdir()
+        (root / "detail-assets").mkdir()
+        main = root / "assets" / "main.jpg"
+        detail = root / "detail-assets" / "detail.jpg"
         Image.new("RGB", (800, 800), "white").save(main)
         Image.new("RGB", (800, 800), "white").save(detail)
         product = {
@@ -21,8 +23,8 @@ class QualityGateTests(unittest.TestCase):
             "validation": {"passed": True},
             "price": {"primary": 10},
             "stock": {"total_observed": 3},
-            "assets": [{"status": "saved", "path": str(main)}],
-            "detail_assets": [{"status": "saved", "path": str(detail)}],
+            "assets": [{"status": "saved", "path": "assets/main.jpg"}],
+            "detail_assets": [{"status": "saved", "path": "detail-assets/detail.jpg"}],
             "skus": [{"sku_id": "1", "name": "白色", "properties": {"颜色": "白色"}, "price": 10, "stock": 3}],
         }
         path = root / "product.json"
@@ -52,6 +54,37 @@ class QualityGateTests(unittest.TestCase):
             result = validate_product(path, self.target(), QualityConfig())
             self.assertFalse(result["passed"])
             self.assertTrue(any("禁止静默截断" in item for item in result["issues"]))
+
+    def test_absolute_and_traversal_asset_paths_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = self.make_product(root)
+            product = json.loads(path.read_text(encoding="utf-8"))
+            product["assets"][0]["path"] = str((root / "assets" / "main.jpg").resolve())
+            product["detail_assets"][0]["path"] = "../detail-assets/detail.jpg"
+            path.write_text(json.dumps(product), encoding="utf-8")
+            result = validate_product(path, self.target(), QualityConfig())
+            self.assertFalse(result["passed"])
+            self.assertTrue(any("路径越界" in issue for issue in result["issues"]))
+
+    def test_nan_price_and_fractional_stock_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.make_product(Path(folder))
+            product = json.loads(path.read_text(encoding="utf-8"))
+            product["price"]["primary"] = "NaN"
+            product["skus"][0]["stock"] = "1.5"
+            path.write_text(json.dumps(product), encoding="utf-8")
+            result = validate_product(path, self.target(), QualityConfig())
+            self.assertFalse(result["passed"])
+            self.assertIn("主价格必须大于 0", result["issues"])
+            self.assertTrue(any("非法价格或库存" in issue for issue in result["issues"]))
+
+    def test_whitespace_runtime_configuration_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = TargetConfig(" ", "玩具", " ", " ", " ", " ", 1)
+            result = validate_product(self.make_product(Path(folder)), target, QualityConfig())
+            self.assertFalse(result["passed"])
+            self.assertIn("未确认目标叶子类目 category_id", result["issues"])
 
 
 if __name__ == "__main__":

@@ -44,6 +44,26 @@ class SkuAdapterTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertIn("目标页面生成 1/2 个 SKU 行", result["issues"])
 
+    def test_rejects_non_finite_fractional_and_overflow_values(self):
+        for price, stock in (("nan", 1), ("Infinity", 1), (1, "1.2"), (1, 2_147_483_648)):
+            with self.subTest(price=price, stock=stock):
+                model = normalize_sku_model([{"name": "红", "price": price, "stock": stock}])
+                self.assertFalse(model["valid"])
+
+    def test_target_rows_must_exactly_match_values_and_sku_id(self):
+        model = normalize_sku_model([{
+            "sku_id": "SKU-1", "name": "红", "properties": {"颜色": "红"}, "price": "8.00", "stock": 3,
+        }])
+        valid = validate_target_rows(model, [{
+            "sku_id": "SKU-1", "properties": {"颜色": "红"}, "price": "8", "stock": "3",
+        }])
+        self.assertTrue(valid["valid"], valid["issues"])
+        invalid = validate_target_rows(model, [{
+            "sku_id": "OTHER", "properties": {"颜色": "红"}, "price": "8.01", "stock": "4",
+        }])
+        self.assertFalse(invalid["valid"])
+        self.assertEqual(len(invalid["issues"]), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

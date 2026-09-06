@@ -8,11 +8,34 @@ from __future__ import annotations
 
 import html
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
 STATUS_SUFFIX = re.compile(r"\s*(?:>|＞|/|｜|\|)\s*(?:现货|预售|缺货|售罄)\s*$", re.I)
 PLACEHOLDER_VALUES = {"无规格", "无", "默认", "标准", "不分规格"}
+MAX_PRICE = Decimal("99999999.99")
+MAX_STOCK = 2_147_483_647
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _valid_price(value: Any) -> bool:
+    parsed = _decimal(value)
+    return parsed is not None and Decimal("0") < parsed <= MAX_PRICE
+
+
+def _valid_stock(value: Any) -> bool:
+    parsed = _decimal(value)
+    return parsed is not None and parsed == parsed.to_integral_value() and 0 <= parsed <= MAX_STOCK
 
 
 def clean_sku_value(value: Any) -> str:
@@ -61,14 +84,8 @@ def normalize_sku_model(skus: list[dict[str, Any]] | None, max_dimensions: int =
         if not props:
             props = {"规格": name}
         explicit.append(bool(row.get("properties") or row.get("specProps") or row.get("skuProps")))
-        try:
-            price = float(row.get("price", 0) or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        try:
-            stock = int(float(row.get("stock", 0) or 0))
-        except (TypeError, ValueError):
-            stock = 0
+        price = row.get("price")
+        stock = row.get("stock")
         normalized.append({
             "source_index": index,
             "sku_id": str(row.get("sku_id") or row.get("skuId") or f"local-{index}"),
@@ -124,8 +141,8 @@ def normalize_sku_model(skus: list[dict[str, Any]] | None, max_dimensions: int =
     duplicate_combinations = len(combinations) != len(set(combinations))
     if duplicate_combinations:
         warnings.append("源 SKU 存在重复规格组合")
-    if any(not row["name"] or row["price"] <= 0 or row["stock"] < 0 for row in normalized):
-        warnings.append("SKU 存在空名称、非正价格或负库存")
+    if any(not row["name"] or not _valid_price(row["price"]) or not _valid_stock(row["stock"]) for row in normalized):
+        warnings.append("SKU 存在空名称、非法价格或库存（含 NaN、Infinity、小数库存、负数或溢出）")
 
     expected_matrix = 1
     for dimension in dimensions:
@@ -140,7 +157,7 @@ def normalize_sku_model(skus: list[dict[str, Any]] | None, max_dimensions: int =
         "source_count": len(normalized),
         "expected_matrix_count": expected_matrix,
         "warnings": warnings,
-        "valid": not warnings or not any("最多安全适配" in item or "重复规格" in item or "非正价格" in item for item in warnings),
+        "valid": not warnings or not any("最多安全适配" in item or "重复规格" in item or "非法价格" in item for item in warnings),
     }
 
 
@@ -153,24 +170,32 @@ def validate_target_rows(model: dict[str, Any], target_rows: list[dict[str, Any]
         issues.append(f"目标页面生成 {len(rows)}/{expected} 个 SKU 行")
     dimension_names = [str(item.get("name") or "") for item in model.get("dimensions") or []]
     combinations: list[tuple[str, ...]] = []
+    expected_by_combo = {
+        tuple(clean_sku_value(row.get("properties", {}).get(name)) for name in dimension_names): row
+        for row in model.get("rows") or []
+    }
     for index, row in enumerate(rows, start=1):
         props = row.get("properties") or {}
         missing = [name for name in dimension_names if not clean_sku_value(props.get(name))]
         if missing:
             issues.append(f"第 {index} 行缺少规格: {','.join(missing)}")
-        try:
-            price = float(row.get("price", 0) or 0)
-        except (TypeError, ValueError):
-            price = 0
-        if price <= 0:
-            issues.append(f"第 {index} 行价格为空")
-        try:
-            stock = int(float(row.get("stock", 0) or 0))
-        except (TypeError, ValueError):
-            stock = -1
-        if stock < 0:
-            issues.append(f"第 {index} 行库存无效")
-        combinations.append(tuple(clean_sku_value(props.get(name)) for name in dimension_names))
+        combination = tuple(clean_sku_value(props.get(name)) for name in dimension_names)
+        combinations.append(combination)
+        expected_row = expected_by_combo.get(combination)
+        if expected_row is None:
+            issues.append(f"第 {index} 行规格组合不属于源商品")
+            continue
+        price = _decimal(row.get("price"))
+        expected_price = _decimal(expected_row.get("price"))
+        if price is None or expected_price is None or price != expected_price:
+            issues.append(f"第 {index} 行价格与源数据不一致")
+        stock = _decimal(row.get("stock"))
+        expected_stock = _decimal(expected_row.get("stock"))
+        if stock is None or expected_stock is None or stock != expected_stock or stock != stock.to_integral_value():
+            issues.append(f"第 {index} 行库存与源数据不一致")
+        expected_sku_id = clean_sku_value(expected_row.get("sku_id"))
+        if clean_sku_value(row.get("sku_id")) != expected_sku_id:
+            issues.append(f"第 {index} 行单品货号与源数据不一致")
     if len(combinations) != len(set(combinations)):
         issues.append("目标页面存在重复规格组合")
     return {"valid": not issues, "expected_rows": expected, "actual_rows": len(rows), "issues": issues}

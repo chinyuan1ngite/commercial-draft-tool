@@ -13,7 +13,6 @@ import json
 import re
 import sys
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,9 +21,9 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from .sku_adapter import normalize_sku_model
+from .security import MAX_TOTAL_IMAGE_BYTES, atomic_write, download_image, hostname_allowed, read_allowlisted_url
 
 
-OFFER_URL = "https://detail.1688.com/offer/{offer_id}.html"
 ALLOWED_HOSTS = {"detail.1688.com", "www.1688.com", "1688.com"}
 BLOCK_MARKERS = (
     "punish",
@@ -34,7 +33,6 @@ BLOCK_MARKERS = (
     "访问被拒绝",
     "请完成验证",
 )
-IMAGE_HOST_MARKERS = ("alicdn.com", "1688.com")
 IMAGE_SKIP_MARKERS = (".svg", "tps-", "rate.jpg", "logo", "icon")
 
 
@@ -78,7 +76,7 @@ def normalize_image_url(url: str) -> str:
 def is_product_image(url: str) -> bool:
     lowered = url.lower()
     return (
-        any(host in lowered for host in IMAGE_HOST_MARKERS)
+        hostname_allowed(url, {"alicdn.com", "1688.com"})
         and not any(marker in lowered for marker in IMAGE_SKIP_MARKERS)
         and any(ext in lowered for ext in (".jpg", ".jpeg", ".png", ".webp"))
     )
@@ -283,15 +281,34 @@ def parse_embedded_skus(html: str, default_price: float | None = None) -> list[d
     return skus
 
 
-def parse_images(soup: BeautifulSoup) -> list[str]:
-    images = []
-    for image in soup.find_all("img"):
-        for key in ("src", "data-src", "data-lazy-src", "data-original"):
-            value = normalize_image_url(image.get(key, ""))
-            if is_product_image(value):
-                images.append(value)
-                break
-    return unique(images)[:50]
+def _structured_image_urls(html: str) -> list[str]:
+    """Extract only seller-provided gallery fields, never arbitrary page images."""
+    values: list[str] = []
+    for marker in ('"mainImage":', '"mainImageList":', '"offerImgList":', '"imageList":'):
+        start = html.find(marker)
+        if start < 0:
+            continue
+        begin = html.find("[", start + len(marker))
+        if begin < 0:
+            continue
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(html[begin:])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            candidate = item if isinstance(item, str) else (item.get("fullPathImageURI") or item.get("imageURI") or item.get("url") if isinstance(item, dict) else "")
+            candidate = normalize_image_url(str(candidate or ""))
+            if is_product_image(candidate):
+                values.append(candidate)
+        if values:
+            break
+    return unique(values)[:50]
+
+
+def parse_images(soup: BeautifulSoup, source_html: str = "") -> list[str]:
+    return _structured_image_urls(source_html) if source_html else []
 
 
 def parse_detail_text(body: str) -> str:
@@ -350,10 +367,9 @@ def fetch_detail(page_html: str) -> dict[str, Any]:
     detail_url = extract_detail_url(page_html)
     if not detail_url:
         return {"source_url": "", "html": "", "text": "", "images": []}
-    request = urllib.request.Request(detail_url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=20) as response:
-        charset = response.headers.get_content_charset() or "gb18030"
-        payload = response.read().decode(charset, errors="replace")
+    data, headers = read_allowlisted_url(detail_url, {"itemcdn.tmall.com"})
+    charset = headers.get_content_charset() or "gb18030"
+    payload = data.decode(charset, errors="replace")
     return parse_detail_response(payload, detail_url)
 
 
@@ -383,6 +399,7 @@ def parse_html(
     min_order_match = re.search(r"(\d+)\s*(件|盒|个)起批", body)
     min_order = min_order_match.group(0) if min_order_match else (f"{begin_amount.group(1)}件起批" if begin_amount else "")
     parsed_skus = parse_embedded_skus(html, primary_price) or parse_skus(body)
+    gallery_images = parse_images(soup, html)
     product = {
         "schema_version": "1.0",
         "status": "blocked" if is_blocked(source_url, soup.title.get_text(" ", strip=True) if soup.title else "", body) else "ok",
@@ -418,13 +435,14 @@ def parse_html(
         # browser publisher may still revalidate against the live target page,
         # but it no longer has to reinterpret raw display names.
         "sku_model": normalize_sku_model(parsed_skus),
-        "images": parse_images(soup),
+        "images": gallery_images,
         "detail_text": parse_detail_text(body),
         "description": {"source_url": "", "html": "", "text": "", "images": []},
         "warnings": warnings,
         "raw": {
             "page_title": clean_text(soup.title.get_text(" ", strip=True) if soup.title else ""),
             "body_length": len(body),
+            "image_source": "structured_gallery" if gallery_images else "untrusted_or_missing",
         },
     }
     product["validation"] = validate_product(product)
@@ -441,6 +459,7 @@ def validate_product(product: dict[str, Any]) -> dict[str, Any]:
         "offer_id": bool(product["source"].get("offer_id")),
         "title": bool(product.get("title")) and not re.fullmatch(r"TOP\s*\d+", product.get("title", ""), re.I),
         "images": bool(product.get("images")),
+        "structured_gallery": product.get("raw", {}).get("image_source") == "structured_gallery",
         "attributes": bool(product.get("attributes")),
         "sku_or_price": bool(product.get("skus")) or product.get("price", {}).get("primary") is not None,
         "not_blocked": product.get("status") != "blocked",
@@ -475,36 +494,36 @@ def collect_with_browser(url: str, profile_dir: Path, wait_seconds: int) -> tupl
     options.set_user_data_path(str(profile_dir.resolve()))
     options.headless(False)
     page = ChromiumPage(options)
-    page.get(validate_url(url))
     try:
-        page.wait.load_start()
-    except Exception:
-        pass
-    time.sleep(3)
-
-    if detect_blocked_page(page) and wait_seconds > 0:
-        deadline = time.time() + wait_seconds
-        while time.time() < deadline and detect_blocked_page(page):
-            time.sleep(2)
-
-    html = page.html
-    try:
-        body_text = page.ele("tag:body").text
-    except Exception:
-        body_text = ""
-    final_url = str(page.url)
-    try:
-        page.quit()
-    except Exception:
-        pass
-    return final_url, html, body_text
+        page.get(validate_url(url))
+        try:
+            page.wait.load_start()
+        except Exception:
+            pass
+        time.sleep(3)
+        if detect_blocked_page(page) and wait_seconds > 0:
+            deadline = time.time() + wait_seconds
+            while time.time() < deadline and detect_blocked_page(page):
+                time.sleep(2)
+        html = page.html
+        try:
+            body_text = page.ele("tag:body").text
+        except Exception:
+            body_text = ""
+        return str(page.url), html, body_text
+    finally:
+        try:
+            page.quit()
+        except Exception:
+            pass
 
 
 def download_images(
-    urls: list[str], asset_dir: Path, prefix: str = "image", namespace: str = ""
+    urls: list[str], asset_dir: Path, prefix: str = "image", namespace: str = "", max_total_bytes: int = MAX_TOTAL_IMAGE_BYTES
 ) -> list[dict[str, Any]]:
     asset_dir.mkdir(parents=True, exist_ok=True)
     results = []
+    total_bytes = 0
     for index, url in enumerate(urls, start=1):
         suffix = ".jpg"
         match = re.search(r"\.(jpg|jpeg|png|webp)(?:[?_]|$)", url, re.I)
@@ -519,9 +538,15 @@ def download_images(
         path = asset_dir / f"{safe_namespace}-{prefix}-{index:02d}-{fingerprint}{suffix}"
         item = {"url": url, "path": str(path), "status": "pending"}
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                path.write_bytes(response.read())
+            if not is_product_image(url):
+                raise ValueError("图片 URL 未通过 1688 图库主机校验")
+            remaining = max_total_bytes - total_bytes
+            if remaining <= 0:
+                raise ValueError("商品图片总量超过限制")
+            bytes_written = download_image(url, path, max_bytes=min(5 * 1024 * 1024, remaining))
+            total_bytes += bytes_written
+            if total_bytes > MAX_TOTAL_IMAGE_BYTES:
+                raise ValueError("商品图片总量超过限制")
             item["status"] = "saved"
         except Exception as exc:  # network failures should not discard the product record
             item["status"] = "failed"
@@ -534,21 +559,29 @@ def save_collection(product: dict[str, Any], html: str, output_dir: Path, downlo
     offer_id = product["source"]["offer_id"]
     target = output_dir / offer_id
     target.mkdir(parents=True, exist_ok=True)
-    (target / "raw.html").write_text(html, encoding="utf-8")
+    atomic_write(target / "raw.html", html)
     if download:
         product["assets"] = download_images(
             product.get("images", []), target / "assets", namespace=offer_id
         )
+        main_bytes = sum(Path(item["path"]).stat().st_size for item in product["assets"] if item.get("status") == "saved")
+        for item in product["assets"]:
+            if item.get("path"):
+                item["path"] = str(Path("assets") / Path(item["path"]).name)
         product["detail_assets"] = download_images(
             product.get("description", {}).get("images", []),
             target / "detail-assets",
             "detail",
             namespace=offer_id,
+            max_total_bytes=max(0, MAX_TOTAL_IMAGE_BYTES - main_bytes),
         )
+        for item in product["detail_assets"]:
+            if item.get("path"):
+                item["path"] = str(Path("detail-assets") / Path(item["path"]).name)
     else:
         product["assets"] = []
         product["detail_assets"] = []
-    (target / "product.json").write_text(json.dumps(product, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(target / "product.json", json.dumps(product, ensure_ascii=False, indent=2))
     return target
 
 

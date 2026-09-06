@@ -13,6 +13,7 @@ import struct
 import sys
 import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from DrissionPage import ChromiumOptions, ChromiumPage
 from PIL import Image
 
 from .sku_adapter import normalize_sku_model, validate_target_rows
+from .security import atomic_write
 
 
 PUBLISH_URL = "https://offer-new.1688.com/popular/publish.htm"
@@ -28,6 +30,34 @@ DRAFT_INDEX_URL = "https://offer.1688.com/offer/draft_index.htm"
 
 def load_product(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _manifest_paths(product_path: Path, product: dict[str, Any], key: str, directory: str) -> tuple[list[Path], list[str]]:
+    root = (product_path.parent / directory).resolve()
+    paths: list[Path] = []
+    errors: list[str] = []
+    for entry in product.get(key) or []:
+        if not isinstance(entry, dict) or str(entry.get("status") or "") != "saved":
+            continue
+        raw = Path(str(entry.get("path") or ""))
+        if raw.is_absolute() or ".." in raw.parts:
+            errors.append(f"素材路径不允许绝对路径或目录穿越: {raw}")
+            continue
+        lexical = product_path.parent / raw
+        if lexical.is_symlink():
+            errors.append(f"素材为符号链接: {raw}")
+            continue
+        resolved = lexical.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            errors.append(f"素材不属于 {directory} 目录: {raw}")
+            continue
+        if not resolved.is_file():
+            errors.append(f"素材不存在或为符号链接: {raw}")
+            continue
+        paths.append(resolved)
+    return paths, errors
 
 
 def resolve_product_asset_paths(product_path: Path, product: dict[str, Any]) -> tuple[list[Path], list[str]]:
@@ -39,28 +69,10 @@ def resolve_product_asset_paths(product_path: Path, product: dict[str, Any]) -> 
     downloaded image, so publishing should use that manifest as the source of
     truth.
     """
-    root = product_path.parent.resolve()
-    paths: list[Path] = []
-    errors: list[str] = []
     entries = product.get("assets") or []
     if not entries:
-        errors.append("product.json 没有 assets 清单")
-        return paths, errors
-    for entry in entries:
-        if str(entry.get("status") or "") != "saved":
-            continue
-        raw = Path(str(entry.get("path") or ""))
-        candidate = raw if raw.is_absolute() else (Path.cwd() / raw)
-        if not candidate.exists():
-            candidate = root / raw
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            resolved = candidate.absolute()
-        if not resolved.is_file():
-            errors.append(f"主图文件不存在: {raw}")
-            continue
-        paths.append(resolved)
+        return [], ["product.json 没有 assets 清单"]
+    paths, errors = _manifest_paths(product_path, product, "assets", "assets")
     if not paths:
         errors.append("没有可用的已下载主图")
     return paths, errors
@@ -68,25 +80,7 @@ def resolve_product_asset_paths(product_path: Path, product: dict[str, Any]) -> 
 
 def resolve_detail_asset_paths(product_path: Path, product: dict[str, Any]) -> tuple[list[Path], list[str]]:
     """Resolve detail images from the same collection manifest."""
-    root = product_path.parent.resolve()
-    paths: list[Path] = []
-    errors: list[str] = []
-    for entry in product.get("detail_assets") or []:
-        if str(entry.get("status") or "") != "saved":
-            continue
-        raw = Path(str(entry.get("path") or ""))
-        candidate = raw if raw.is_absolute() else (Path.cwd() / raw)
-        if not candidate.exists():
-            candidate = root / raw
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            resolved = candidate.absolute()
-        if resolved.is_file():
-            paths.append(resolved)
-        else:
-            errors.append(f"详情图片文件不存在: {raw}")
-    return paths, errors
+    return _manifest_paths(product_path, product, "detail_assets", "detail-assets")
 
 
 def image_info(path: Path) -> dict[str, Any]:
@@ -433,40 +427,60 @@ def install_publish_guards(page: ChromiumPage) -> None:
     page.run_js(
         r"""
         (() => {
-          if (window.__codexDraftGuardsInstalled) return;
-          window.__codexDraftGuardsInstalled = true;
-          window.__codexBlockedPublish = [];
+          if (window.__commercialDraftGuardsInstalled) return;
+          window.__commercialDraftGuardsInstalled = true;
+          window.__commercialDraftGuardEvents = [];
+          const formal = value => /(?:submitFormButton|正式发布|立即发布|\/submit\.htm)(?:[?#]|$)?/i.test(String(value || '')) && !/draftSubmit\.htm/i.test(String(value || ''));
           const block = (kind, value) => {
-            window.__codexBlockedPublish.push({kind, value: String(value), at: Date.now()});
+            window.__commercialDraftGuardEvents.push({kind, value: String(value), blocked: true, at: new Date().toISOString()});
             throw new Error('Formal publishing is disabled by the draft-only guard.');
           };
           document.addEventListener('click', event => {
-            const target = event.target && event.target.closest
-              ? event.target.closest('#submitFormButton') : null;
-            if (target) {
+            const target = event.target && event.target.closest ? event.target.closest('button,a,input[type=submit]') : null;
+            const evidence = target ? [target.id, target.name, target.value, target.innerText, target.formAction, target.href].join(' ') : '';
+            if (formal(evidence)) {
               event.preventDefault();
               event.stopImmediatePropagation();
-              block('click', '#submitFormButton');
+              block('click', evidence);
             }
+          }, true);
+          document.addEventListener('submit', event => {
+            const evidence = [event.target?.action, event.submitter?.id, event.submitter?.innerText].join(' ');
+            if (formal(evidence)) { event.preventDefault(); event.stopImmediatePropagation(); block('form', evidence); }
           }, true);
           const originalFetch = window.fetch;
           window.fetch = function(input, init) {
             const url = typeof input === 'string' ? input : (input && input.url) || '';
-            if (/\/submit\.htm(?:[?#]|$)/i.test(url) && !/\/draftSubmit\.htm/i.test(url)) {
+            if (formal(url)) {
+              window.__commercialDraftGuardEvents.push({kind: 'fetch', value: String(url), blocked: true, at: new Date().toISOString()});
               return Promise.reject(new Error('Formal publish request blocked.'));
             }
             return originalFetch.apply(this, arguments);
           };
           const originalOpen = XMLHttpRequest.prototype.open;
           XMLHttpRequest.prototype.open = function(method, url) {
-            if (/\/submit\.htm(?:[?#]|$)/i.test(String(url)) && !/\/draftSubmit\.htm/i.test(String(url))) {
+            if (formal(url)) {
               block('xhr', url);
             }
             return originalOpen.apply(this, arguments);
           };
+          const originalBeacon = navigator.sendBeacon?.bind(navigator);
+          if (originalBeacon) navigator.sendBeacon = function(url, data) {
+            if (formal(url)) block('sendBeacon', url);
+            return originalBeacon(url, data);
+          };
+          const originalOpenWindow = window.open;
+          window.open = function(url) { if (formal(url)) block('window.open', url); return originalOpenWindow.apply(this, arguments); };
         })();
         """
     )
+
+
+def read_publish_guard_events(page: ChromiumPage) -> list[dict[str, Any]]:
+    try:
+        return list(page.run_js("return window.__commercialDraftGuardEvents || [];") or [])
+    except Exception:
+        return []
 
 
 def input_value(page: ChromiumPage, selector: str, value: str) -> bool:
@@ -1592,7 +1606,8 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
             const label = (cell.querySelector('[class*="sku"], [class*="spec"]')?.innerText || '').trim();
             if (label) values[label] = label;
           });
-          return {text: (row.innerText || '').trim(), inputs, properties: values, headers};
+           const codeInput = inputs.find(item => /单品货号|货号|商家编码|编码|sku/i.test([item.name, item.placeholder, item.header].join(' ')));
+           return {text: (row.innerText || '').trim(), inputs, sku_id: codeInput?.value || '', properties: values, headers};
         });
         """
     ) or [])
@@ -1683,6 +1698,23 @@ def read_price_range_preview(page: ChromiumPage) -> str:
     ) or "").strip()
 
 
+def displayed_price(value: Any) -> str:
+    """Extract price only from target-page text, never from source data."""
+    text = str(value or "")
+    match = re.search(r"[¥￥]\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if match:
+        return match.group(1)
+    return text.strip() if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text.strip()) else ""
+
+
+def same_number(left: Any, right: Any) -> bool:
+    try:
+        first, second = Decimal(str(left).strip()), Decimal(str(right).strip())
+        return first.is_finite() and second.is_finite() and first == second
+    except (InvalidOperation, ValueError):
+        return False
+
+
 def inspect_state(page: ChromiumPage) -> dict[str, Any]:
     body = page.ele("tag:body")
     body_text = (body.text or "") if body else ""
@@ -1692,6 +1724,16 @@ def inspect_state(page: ChromiumPage) -> dict[str, Any]:
         "logged_in": "login.taobao.com" not in str(page.url),
         "save_draft_present": bool(page.ele("css:#saveDraftButton", timeout=2)),
         "publish_present": bool(page.ele("css:#submitFormButton", timeout=2)),
+        "product_title_value": str(page.run_js(
+            "return document.querySelector('#guid-title input')?.value || '';"
+        ) or "").strip(),
+        "category_id_value": str(page.run_js(
+            "return document.querySelector('input[name=catId], input[name=categoryId]')?.value || '';"
+        ) or "").strip(),
+        "main_image_count": int(page.run_js(
+            "return document.querySelectorAll('#guid-primaryPicture .module-picture-cover-wrapper:not(.cover-empty)').length;"
+        ) or 0),
+        "price_range_preview": read_price_range_preview(page),
         "errors": [
             line.strip() for line in body_text.splitlines()
             if any(marker in line for marker in ("错误", "不能为空", "请填写", "请选择", "请上传"))
@@ -1723,7 +1765,7 @@ def inspect_state(page: ChromiumPage) -> dict[str, Any]:
             "return (document.querySelector('#tinyMCE-0')?.value || '').length;"
         ) or 0),
         "blocked_publish_attempts": page.run_js(
-            "return window.__codexBlockedPublish || [];"
+            "return window.__commercialDraftGuardEvents || [];"
         ),
     }
 
@@ -1793,10 +1835,8 @@ def read_draft_records_background(page: ChromiumPage) -> list[dict[str, str]]:
 def save_artifacts(page: ChromiumPage, output_dir: Path, report: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     report["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    (output_dir / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (output_dir / "page.html").write_text(page.html, encoding="utf-8")
+    atomic_write(output_dir / "report.json", json.dumps(report, ensure_ascii=False, indent=2))
+    atomic_write(output_dir / "page.html", page.html)
     try:
         page.get_screenshot(path=str(output_dir), name="page.png", full_page=True)
     except Exception:
@@ -1827,6 +1867,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--category-rules", type=Path, required=True)
     parser.add_argument("--preview-only", action="store_true")
     parser.add_argument("--save-draft", action="store_true")
+    parser.add_argument("--existing-draft-id", default="")
     parser.add_argument(
         "--keep-open",
         action="store_true",
@@ -1859,7 +1900,9 @@ def main(argv: list[str] | None = None) -> int:
         "source_offer_id": product.get("source", {}).get("offer_id"),
         "category_id": category_id,
         "mode": "save_draft" if args.save_draft else "preview_only",
-        "publish_clicked": False,
+        "publish_clicked": None,
+        "publish_guard_events": [],
+        "existing_draft_id": str(args.existing_draft_id or "").strip() or None,
         "draft_save_clicked": False,
         "keep_open": bool(args.keep_open),
         "fields": {},
@@ -1879,9 +1922,30 @@ def main(argv: list[str] | None = None) -> int:
             page.get(DRAFT_INDEX_URL)
             time.sleep(8)
             report["draft_records_before"] = draft_records(page)
+            report["draft_snapshot_ok"] = True
         except Exception:
             report["draft_records_before"] = []
-        url = (
+            report["draft_snapshot_ok"] = False
+        existing_record = next((item for item in report["draft_records_before"] if str(item.get("id")) == str(args.existing_draft_id)), None)
+        same_title = [item for item in report["draft_records_before"] if item.get("title") == str(product.get("title") or "")]
+        if args.save_draft and not report["draft_snapshot_ok"]:
+            report["result"] = "blocked_draft_snapshot_unavailable"
+            save_artifacts(page, args.output_dir, report)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 4
+        if args.save_draft and args.existing_draft_id and not existing_record:
+            report["result"] = "blocked_ledger_draft_not_found"
+            report.setdefault("warnings", []).append("台账草稿 ID 在当前店铺不可见，已阻止新建")
+            save_artifacts(page, args.output_dir, report)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 4
+        if args.save_draft and not args.existing_draft_id and same_title:
+            report["result"] = "blocked_existing_same_title_draft"
+            report.setdefault("warnings", []).append("发现同标题历史草稿但没有本地幂等台账，已阻止重复创建")
+            save_artifacts(page, args.output_dir, report)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 4
+        url = existing_record.get("url") if existing_record and existing_record.get("url") else (
             f"{PUBLISH_URL}?catId={category_id}"
             "&saleChannel=default&channelType=pcDefault&operator=new"
         )
@@ -2052,14 +2116,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             price_value = next((value for key, value in values.items() if re.search(r"price|价格|售价", key, re.I)), "")
             stock_value = next((value for key, value in values.items() if re.search(r"stock|库存|数量", key, re.I)), "")
-            if not price_value:
-                # Quantity-priced listings expose price in guid-priceRange,
-                # not in each SKU row. Use the corresponding source price for
-                # row consistency validation instead of treating stock as price.
-                price_value = str(source.get("price") or product.get("price", {}).get("primary") or "")
-            if not stock_value and len(inputs) > 1:
-                stock_value = str(inputs[1].get("value") or "")
-            rendered_for_validation.append({"properties": props, "price": price_value, "stock": stock_value})
+            rendered_for_validation.append({"properties": props, "price": price_value, "stock": stock_value, "sku_id": rendered.get("sku_id") or ""})
         report["fields"]["sku_validation"] = validate_target_rows(sku_model, rendered_for_validation)
         if sku_model.get("source_count") and (
             report["fields"]["sku_dimensions"].get("status") != "filled"
@@ -2078,6 +2135,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         time.sleep(.5)
         report["fields"]["price_range_preview"] = read_price_range_preview(page)
+        page_price = displayed_price(report["fields"]["price_range_preview"])
+        if page_price and rendered_for_validation:
+            for row in rendered_for_validation:
+                if not row.get("price"):
+                    row["price"] = page_price
+            report["fields"]["sku_validation"] = validate_target_rows(sku_model, rendered_for_validation)
         expected_price = str(product.get("price", {}).get("primary", 0))
         if expected_price not in report["fields"]["price_range_preview"]:
             report.setdefault("warnings", []).append(
@@ -2224,6 +2287,13 @@ def main(argv: list[str] | None = None) -> int:
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
+            report["publish_guard_events"] = read_publish_guard_events(page)
+            if report["publish_guard_events"]:
+                report["publish_clicked"] = True
+                report["result"] = "blocked_formal_publish_attempt"
+                save_artifacts(page, args.output_dir, report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 4
             button = page.ele("css:#saveDraftButton", timeout=5)
             if not button:
                 report["result"] = "save_draft_button_missing"
@@ -2233,6 +2303,13 @@ def main(argv: list[str] | None = None) -> int:
             button.click()
             report["draft_save_clicked"] = True
             time.sleep(10)
+            report["publish_guard_events"] = read_publish_guard_events(page)
+            if report["publish_guard_events"]:
+                report["publish_clicked"] = True
+                report["result"] = "blocked_formal_publish_attempt"
+                save_artifacts(page, args.output_dir, report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 4
             try:
                 report["alert_text"] = page.handle_alert(accept=True, timeout=2)
             except Exception:
@@ -2268,23 +2345,20 @@ def main(argv: list[str] | None = None) -> int:
                 report["draft_records_after"] = report["draft_records_after_retry"]
                 matching = [item for item in report["draft_records_after"] if item.get("title") == title]
                 new_matching = [item for item in matching if item.get("id") not in before_ids]
-            # Prefer the newly created row. If the list endpoint is eventually
-            # consistent and does not show it yet, choose the newest same-title
-            # row by its displayed save timestamp.
-            candidates = new_matching or matching
-            candidates.sort(key=lambda item: str(item.get("saved_at") or ""), reverse=True)
-            chosen = candidates[0] if candidates else None
+            if args.existing_draft_id:
+                chosen = next((item for item in matching if str(item.get("id")) == str(args.existing_draft_id)), None)
+            else:
+                chosen = new_matching[0] if len(new_matching) == 1 else None
             report["draft_record_selected"] = chosen
             if chosen:
                 report["draft_id"] = chosen.get("id")
                 report["draft_url"] = chosen.get("url") or report.get("draft_url")
-            report["draft_id_is_new"] = bool(chosen and chosen.get("id") not in before_ids)
-            if chosen and not before_ids:
-                # With no pre-snapshot (for example when the list endpoint is
-                # unstable), a same-title row saved during this run is treated
-                # as the new draft based on its displayed timestamp.
-                stamp = str(chosen.get("saved_at") or "")
-                report["draft_id_is_new"] = stamp.replace("/", "-") >= report["draft_snapshot_at"][:16].replace("T", " ")
+            report["draft_identity_verified"] = bool(
+                chosen and (
+                    (args.existing_draft_id and str(chosen.get("id")) == str(args.existing_draft_id))
+                    or (not args.existing_draft_id and chosen.get("id") not in before_ids)
+                )
+            )
             report["description_reopen_verified"] = False
             if report["draft_url"]:
                 page.get(report["draft_url"])
@@ -2306,12 +2380,51 @@ def main(argv: list[str] | None = None) -> int:
                     ))
                 )
                 report["state_after_reopen"] = inspect_state(page)
+                discover_sku_table(page)
+                reopened_rows = read_sku_table_rows(page)
+                reopened_for_validation = []
+                reopened_page_price = displayed_price(report["state_after_reopen"].get("price_range_preview"))
+                dimensions = list(sku_model.get("dimensions") or [])
+                for index, rendered in enumerate(reopened_rows):
+                    source = normalized_sku_rows[index] if index < len(normalized_sku_rows) else {}
+                    row_text = str(rendered.get("text") or "")
+                    props = {
+                        str(dimension.get("name")): (
+                            str((source.get("properties") or {}).get(str(dimension.get("name"))) or "")
+                            if str((source.get("properties") or {}).get(str(dimension.get("name"))) or "") in row_text else ""
+                        ) for dimension in dimensions
+                    }
+                    inputs = rendered.get("inputs") or []
+                    values = {
+                        " ".join(str(item.get(key) or "") for key in ("name", "placeholder", "header")): str(item.get("value") or "")
+                        for item in inputs
+                    }
+                    reopened_for_validation.append({
+                        "properties": props,
+                        "price": next((v for k, v in values.items() if re.search(r"price|价格|售价", k, re.I)), reopened_page_price),
+                        "stock": next((v for k, v in values.items() if re.search(r"stock|库存|数量", k, re.I)), ""),
+                        "sku_id": rendered.get("sku_id") or "",
+                    })
+                report["sku_reopen_validation"] = validate_target_rows(sku_model, reopened_for_validation)
+                initial_attributes = report["fields"].get("attributes") or {}
+                report["attributes_after_reopen"] = {
+                    prop_id: selected_prop_value(page, prop_id) for prop_id in initial_attributes
+                }
             reopened = report.get("state_after_reopen") or {}
             expected_skus = len(product.get("skus") or [])
             weights = reopened.get("package_weight_values") or []
             report["field_reopen_checks"] = {
-                "new_draft_identified": bool(report.get("draft_id_is_new")),
+                "draft_identity": bool(report.get("draft_identity_verified")),
                 "description": bool(report["description_reopen_verified"]),
+                "title": reopened.get("product_title_value") == str(product.get("title") or ""),
+                "category": reopened.get("category_id_value") == category_id or f"catId={category_id}" in str(reopened.get("url") or ""),
+                "main_images": int(reopened.get("main_image_count") or 0) >= int(report["fields"].get("main_images_expected") or 0),
+                "sku_values": bool((report.get("sku_reopen_validation") or {}).get("valid")),
+                "price": same_number(displayed_price(reopened.get("price_range_preview")), expected_price),
+                "attributes": all(
+                    bool(item.get("displayed")) and report.get("attributes_after_reopen", {}).get(prop_id) == item.get("displayed")
+                    for prop_id, item in (report["fields"].get("attributes") or {}).items() if isinstance(item, dict)
+                ),
                 "shipping_address": _compact_text(args.shipping_address)
                     in _compact_text(reopened.get("shipping_address_value")),
                 "delivery_time": _compact_text(args.delivery_promise)
@@ -2322,7 +2435,7 @@ def main(argv: list[str] | None = None) -> int:
                 "package_weights": len(weights) == expected_skus and all(
                     len(row) >= 4 and str(row[3]) == str(args.package_weight_grams) for row in weights
                 ),
-                "publish_not_clicked": not report["publish_clicked"],
+                "publish_not_clicked": not read_publish_guard_events(page),
             }
             report["result"] = (
                 "draft_saved_and_reopened_verified"
@@ -2333,6 +2446,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             report["result"] = "preview_filled"
 
+        report["publish_guard_events"] = read_publish_guard_events(page)
+        report["publish_clicked"] = any(bool(item.get("blocked")) for item in report["publish_guard_events"] if isinstance(item, dict))
+        if report["publish_clicked"]:
+            report["result"] = "blocked_formal_publish_attempt"
         save_artifacts(page, args.output_dir, report)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["result"] in {

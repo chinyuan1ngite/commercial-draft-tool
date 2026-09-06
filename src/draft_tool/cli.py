@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 from .config import AppConfig
@@ -19,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="1688 自动保存草稿工具（不执行正式上架）")
     parser.add_argument("--product", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--output-dir", type=Path, help="运行输出根目录；实际结果仍按 商品ID/运行ID 隔离")
     parser.add_argument("--category-id")
     parser.add_argument("--category-name")
     parser.add_argument("--store-identity-text")
@@ -45,7 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.validate_only:
         print(json.dumps(gate, ensure_ascii=False, indent=2))
         return 0 if gate["passed"] else 4
-    output_dir = (args.output_dir or config.output_root / str((gate.get("summary") or {}).get("offer_id") or "unknown")).resolve()
+    offer_id = str((gate.get("summary") or {}).get("offer_id") or "unknown")
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    output_base = args.output_dir or config.output_root
+    output_dir = (output_base / offer_id / run_id).resolve()
     return run_save_draft(args.product.resolve(), config, target, output_dir, args.preview_only, args.keep_open)
 
 
