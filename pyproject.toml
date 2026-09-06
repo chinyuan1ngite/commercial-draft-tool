@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "commercial-1688-draft-tool"
-version = "0.3.1"
+version = "0.3.2"
 description = "Draft-only 1688 collection and seller workflow"
 requires-python = ">=3.11"
 dependencies = [

@@ -54,8 +54,11 @@ def run_save_draft(
     try:
         with profile_lock(config.profile_dir):
             existing = ledger.get(store_identity, offer_id)
-            run_argv = argv + ["--existing-draft-id", str((existing or {}).get("draft_id") or "")]
-            result = browser_actions.main([item for item in run_argv if item])
+            run_argv = [item for item in argv if item]
+            existing_draft_id = str((existing or {}).get("draft_id") or "").strip()
+            if existing_draft_id:
+                run_argv.extend(["--existing-draft-id", existing_draft_id])
+            result = browser_actions.main(run_argv)
             report_path = output_dir / "report.json"
             if result == 0 and not preview_only and report_path.is_file():
                 report = json.loads(report_path.read_text(encoding="utf-8"))
