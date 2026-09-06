@@ -16,6 +16,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 from PIL import Image
@@ -26,6 +27,87 @@ from .security import atomic_write
 
 PUBLISH_URL = "https://offer-new.1688.com/popular/publish.htm"
 DRAFT_INDEX_URL = "https://offer.1688.com/offer/draft_index.htm"
+SELLER_LOGIN_HOSTS = frozenset({
+    "login.taobao.com",
+    "login.1688.com",
+    "passport.1688.com",
+    "passport.alibaba.com",
+    "login.alibaba.com",
+})
+
+
+def is_seller_login_url(value: Any) -> bool:
+    try:
+        hostname = (urlparse(str(value)).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return hostname in SELLER_LOGIN_HOSTS
+
+
+def wait_for_seller_login(
+    page: ChromiumPage,
+    timeout_seconds: int,
+    poll_seconds: float = 2.0,
+) -> str:
+    """Wait until interactive seller login completes or the browser is closed."""
+    deadline = None if timeout_seconds <= 0 else time.monotonic() + timeout_seconds
+    while True:
+        try:
+            current_url = str(page.url)
+        except Exception:
+            return "browser_closed"
+        if not is_seller_login_url(current_url):
+            return "authenticated"
+        if deadline is not None and time.monotonic() >= deadline:
+            return "login_timeout"
+        delay = poll_seconds
+        if deadline is not None:
+            delay = min(delay, max(0.01, deadline - time.monotonic()))
+        time.sleep(delay)
+
+
+def open_seller_page(
+    page: ChromiumPage,
+    url: str,
+    login_timeout_seconds: int,
+    settle_seconds: float,
+) -> str:
+    """Open a seller page, pausing for interactive login before retrying it."""
+    deadline = None if login_timeout_seconds <= 0 else time.monotonic() + login_timeout_seconds
+    announced = False
+    while True:
+        try:
+            page.get(url)
+        except Exception:
+            return "browser_closed"
+        time.sleep(2)
+        try:
+            current_url = str(page.url)
+        except Exception:
+            return "browser_closed"
+        if not is_seller_login_url(current_url):
+            time.sleep(max(0.0, settle_seconds - 2))
+            try:
+                current_url = str(page.url)
+            except Exception:
+                return "browser_closed"
+            if not is_seller_login_url(current_url):
+                return "ready"
+        if not announced:
+            wait_text = "不限时" if deadline is None else f"最多 {login_timeout_seconds} 秒"
+            print(f"检测到卖家登录页，程序将{wait_text}等待人工完成登录，请勿关闭浏览器。", flush=True)
+            announced = True
+        if deadline is not None:
+            remaining = int(deadline - time.monotonic())
+            if remaining <= 0:
+                return "login_timeout"
+        else:
+            remaining = 0
+        status = wait_for_seller_login(page, remaining)
+        if status != "authenticated":
+            return status
+        # Login can land on an account home page. Loop and reopen the exact
+        # seller URL, then verify it no longer redirects to authentication.
 
 
 def load_product(path: Path) -> dict[str, Any]:
@@ -1721,7 +1803,7 @@ def inspect_state(page: ChromiumPage) -> dict[str, Any]:
     return {
         "url": str(page.url),
         "title": str(page.title),
-        "logged_in": "login.taobao.com" not in str(page.url),
+        "logged_in": not is_seller_login_url(page.url),
         "save_draft_present": bool(page.ele("css:#saveDraftButton", timeout=2)),
         "publish_present": bool(page.ele("css:#submitFormButton", timeout=2)),
         "product_title_value": str(page.run_js(
@@ -1835,12 +1917,15 @@ def read_draft_records_background(page: ChromiumPage) -> list[dict[str, str]]:
 def save_artifacts(page: ChromiumPage, output_dir: Path, report: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     report["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    atomic_write(output_dir / "report.json", json.dumps(report, ensure_ascii=False, indent=2))
-    atomic_write(output_dir / "page.html", page.html)
+    try:
+        atomic_write(output_dir / "page.html", page.html)
+    except Exception as exc:
+        report.setdefault("artifact_warnings", []).append(f"page_html_unavailable:{type(exc).__name__}")
     try:
         page.get_screenshot(path=str(output_dir), name="page.png", full_page=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        report.setdefault("artifact_warnings", []).append(f"page_screenshot_unavailable:{type(exc).__name__}")
+    atomic_write(output_dir / "report.json", json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1869,6 +1954,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save-draft", action="store_true")
     parser.add_argument("--existing-draft-id", default="")
     parser.add_argument(
+        "--login-timeout-seconds",
+        type=int,
+        default=600,
+        help="等待卖家登录的秒数；0 表示不限时，直到登录完成或手动关闭浏览器",
+    )
+    parser.add_argument(
         "--keep-open",
         action="store_true",
         help="验证结束后保留浏览器页面，不关闭自动化连接",
@@ -1876,6 +1967,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.preview_only and args.save_draft:
         parser.error("--preview-only and --save-draft are mutually exclusive")
+    if args.login_timeout_seconds < 0:
+        parser.error("--login-timeout-seconds 不能小于 0")
 
     args.product = args.product.resolve()
     product = load_product(args.product)
@@ -1919,8 +2012,22 @@ def main(argv: list[str] | None = None) -> int:
         # Snapshot the list before opening the form so a same-title old draft
         # cannot be mistaken for the result of this run.
         try:
-            page.get(DRAFT_INDEX_URL)
-            time.sleep(8)
+            login_status = open_seller_page(
+                page, DRAFT_INDEX_URL, args.login_timeout_seconds, settle_seconds=8
+            )
+            if login_status != "ready":
+                report["result"] = (
+                    "seller_login_timeout"
+                    if login_status == "login_timeout"
+                    else "seller_browser_closed_during_login"
+                )
+                report["login_wait"] = {
+                    "status": login_status,
+                    "timeout_seconds": args.login_timeout_seconds or None,
+                }
+                save_artifacts(page, args.output_dir, report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 2
             report["draft_records_before"] = draft_records(page)
             report["draft_snapshot_ok"] = True
         except Exception:
@@ -1949,11 +2056,19 @@ def main(argv: list[str] | None = None) -> int:
             f"{PUBLISH_URL}?catId={category_id}"
             "&saleChannel=default&channelType=pcDefault&operator=new"
         )
-        page.get(url)
-        time.sleep(12)
-        if "login.taobao.com" in str(page.url):
-            report["state"] = inspect_state(page)
-            report["result"] = "login_required"
+        login_status = open_seller_page(
+            page, url, args.login_timeout_seconds, settle_seconds=12
+        )
+        if login_status != "ready":
+            report["result"] = (
+                "seller_login_timeout"
+                if login_status == "login_timeout"
+                else "seller_browser_closed_during_login"
+            )
+            report["login_wait"] = {
+                "status": login_status,
+                "timeout_seconds": args.login_timeout_seconds or None,
+            }
             save_artifacts(page, args.output_dir, report)
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 2

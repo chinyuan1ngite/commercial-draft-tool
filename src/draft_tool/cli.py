@@ -29,6 +29,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--freight-template-text")
     parser.add_argument("--delivery-promise")
     parser.add_argument("--package-weight-grams", type=int)
+    parser.add_argument(
+        "--login-timeout-seconds", type=int, default=0,
+        help="等待卖家登录的秒数；0 表示不限时",
+    )
     parser.add_argument("--preview-only", action="store_true")
     parser.add_argument("--keep-open", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
@@ -51,7 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     output_base = args.output_dir or config.output_root
     output_dir = (output_base / offer_id / run_id).resolve()
-    return run_save_draft(args.product.resolve(), config, target, output_dir, args.preview_only, args.keep_open)
+    return run_save_draft(
+        args.product.resolve(), config, target, output_dir, args.preview_only,
+        args.keep_open, args.login_timeout_seconds,
+    )
 
 
 if __name__ == "__main__":

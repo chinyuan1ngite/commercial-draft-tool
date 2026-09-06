@@ -16,6 +16,7 @@ def run_save_draft(
     output_dir: Path,
     preview_only: bool = False,
     keep_open: bool = False,
+    login_timeout_seconds: int = 0,
 ) -> int:
     gate = validate_product(product_path, target, config.quality)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -39,6 +40,7 @@ def run_save_draft(
         "--category-id", str(target.category_id),
         "--store-identity-text", str(target.store_identity_text),
         "--category-rules", str(rules_path.resolve()),
+        "--login-timeout-seconds", str(login_timeout_seconds),
         "--keep-open" if keep_open else "",
         "--preview-only" if preview_only else "--save-draft",
     ]

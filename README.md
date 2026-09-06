@@ -37,7 +37,7 @@ draft-tool --product "D:\path\product.json" --config config\settings.local.json 
 draft-tool --product "D:\path\product.json" --config config\settings.local.json
 ```
 
-最后一条命令会尝试保存草稿，但不会正式上架。每次运行输出 `quality-gate.json`、`runtime-config.json`、页面报告和截图，可据此捕获并固化当前店铺/类目配置。
+最后一条命令会尝试保存草稿，但不会正式上架。卖家预览/保存遇到登录页时默认不限时等待人工登录，完成后自动回到原页面继续；命令行可用 `--login-timeout-seconds N` 设置超时，`0` 表示不限时。每次运行输出 `quality-gate.json`、`runtime-config.json`、页面报告和截图，可据此捕获并固化当前店铺/类目配置。
 
 默认输出按 `商品ID/运行ID` 隔离，运行状态采用原子写入。同一卖家 Profile 同时只能运行一个任务。工具以“店铺身份 + 源 offer_id”为幂等键记录草稿 ID：有台账时更新原草稿；没有台账但发现同标题旧草稿时停止并要求人工确认，不会删除任何历史草稿。
 

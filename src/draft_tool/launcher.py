@@ -24,7 +24,7 @@ from draft_tool.security import atomic_write
 EXIT_MESSAGES = {
     0: "操作完成",
     1: "输入或采集失败",
-    2: "需要登录或采集结果被阻断",
+    2: "登录等待中止、浏览器被关闭或采集结果被阻断",
     3: "页面控件缺失",
     4: "质量门禁或安全校验阻断",
     5: "卖家浏览器正在被其他任务使用",
@@ -195,7 +195,7 @@ class Launcher(tk.Tk):
             "--url", url,
             "--output-dir", str(self.paths["products"]),
             "--profile-dir", str(self.paths["buyer_profile"]),
-            "--wait-for-challenge", "120",
+            "--wait-for-challenge", "-1",
         ]
         self._start("--collect", arguments, "正在采集商品", self._after_collect)
 
@@ -211,11 +211,11 @@ class Launcher(tk.Tk):
             label = "正在校验"
         elif action == "preview":
             arguments.append("--preview-only")
-            label = "正在预览填充"
+            label = "正在预览填充；如出现登录页，请完成登录，程序会自动继续"
         else:
             if not messagebox.askyesno("保存草稿", "确认打开卖家后台并保存草稿？程序不会正式发布。", parent=self):
                 return
-            label = "正在保存草稿"
+            label = "正在保存草稿；如出现登录页，请完成登录，程序会自动继续"
         self._start("--cli", arguments, label)
 
     def _start(self, mode: str, arguments: list[str], label: str, callback: Callable[[str], None] | None = None) -> None:

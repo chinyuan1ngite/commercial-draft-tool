@@ -501,9 +501,9 @@ def collect_with_browser(url: str, profile_dir: Path, wait_seconds: int) -> tupl
         except Exception:
             pass
         time.sleep(3)
-        if detect_blocked_page(page) and wait_seconds > 0:
-            deadline = time.time() + wait_seconds
-            while time.time() < deadline and detect_blocked_page(page):
+        if detect_blocked_page(page) and wait_seconds != 0:
+            deadline = None if wait_seconds < 0 else time.time() + wait_seconds
+            while (deadline is None or time.time() < deadline) and detect_blocked_page(page):
                 time.sleep(2)
         html = page.html
         try:
@@ -598,7 +598,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-url", help="离线 HTML 对应的原始 1688 商品链接")
     parser.add_argument("--output-dir", type=Path, default=Path("data/1688-products"))
     parser.add_argument("--profile-dir", type=Path, default=Path(".local/1688-browser"))
-    parser.add_argument("--wait-for-challenge", type=int, default=0, help="检测到登录/验证页后等待用户处理的秒数")
+    parser.add_argument(
+        "--wait-for-challenge", type=int, default=0,
+        help="检测到登录/验证页后等待用户处理的秒数；负数表示不限时",
+    )
     parser.add_argument("--no-download-images", action="store_true")
     args = parser.parse_args(argv)
 

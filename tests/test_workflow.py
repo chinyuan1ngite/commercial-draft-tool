@@ -43,6 +43,8 @@ class WorkflowTests(unittest.TestCase):
             ):
                 self.assertNotIn(option, captured)
             self.assertIn("--store-identity-text", captured)
+            login_index = captured.index("--login-timeout-seconds")
+            self.assertEqual(captured[login_index + 1], "0")
             self.assertNotIn("--existing-draft-id", captured)
             self.assertNotIn("None", captured)
 
