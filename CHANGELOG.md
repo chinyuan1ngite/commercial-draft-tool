@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-09-06
+
+- Added a standalone Windows GUI for collection, configuration, validation, preview, and draft saving.
+- Added per-user runtime initialization under LocalAppData with a configurable `DRAFT_TOOL_HOME` override.
+- Added source installation, test, and reproducible PyInstaller build scripts.
+- Added operator and environment manuals plus a versioned Windows release package.
+
 ## 0.2.0 - 2026-09-06
 
 - Added strict finite price, integer stock, weight, and configuration validation.

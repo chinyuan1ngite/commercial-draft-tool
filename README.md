@@ -4,13 +4,24 @@
 
 本目录是独立工程，不读取原项目的 `data/` 或浏览器登录目录。生产运行数据、登录会话、配置和报告均被 `.gitignore` 排除。
 
-## 安装
+## 推荐：直接运行 Windows 版
+
+打开 `dist` 目录中的 `Commercial1688DraftTool.exe`。首次运行会在 `%LOCALAPPDATA%\Commercial1688DraftTool` 创建配置、商品、浏览器 Profile、草稿报告和日志目录，无需 Python，也不依赖 Codex。
+
+完整说明：
+
+- [操作说明](docs/操作说明.md)
+- [环境配置](docs/环境配置.md)
+
+## 源码版安装
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\python -m pip install -e .
-Copy-Item config\settings.example.json config\settings.local.json
+.venv\Scripts\python -m draft_tool.launcher
 ```
+
+也可以运行 `scripts\install.ps1` 后双击 `launcher.bat`。
 
 在 `config/settings.local.json` 中明确填写目标类目、店铺身份校验文本、发货地址、运费模板、发货承诺和重量。`store_identity_text` 应是发布页稳定可见且能唯一识别当前店铺的文字，用于防止登录错账号。
 
@@ -61,6 +72,6 @@ draft-tool --product "D:\path\product.json" --config config\settings.local.json 
 
 ## 普通启动器适配
 
-CLI 已保持无 Codex 依赖并提供稳定退出码，后续可直接包装成 Windows 启动器或桌面界面。启动器只需负责：选择商品文件、编辑店铺配置、先执行校验、展示待人工处理项、启动可见浏览器，以及读取 JSON 报告显示最终状态。
+已提供 Windows 图形启动器，支持选择商品、采集链接、编辑配置、数据校验、预览填充、保存草稿、查看运行日志和打开数据目录。CLI 仍保持稳定退出码，便于后续接入任务系统。
 
-当前程序不依赖 Codex，CLI 可由普通 Windows 启动器直接调用。封装前仍建议增加配置编辑与凭据存储界面、浏览器版本检查、安装包签名、自动升级签名和日志脱敏。不要把浏览器 profile 打进安装包；每个店铺应使用独立 profile，并由操作者完成登录和验证码。
+当前程序不依赖 Codex。商用部署前仍建议配置企业代码签名证书和受控升级源。不要把浏览器 Profile 打进安装包；每个店铺应使用独立 Profile，并由操作者完成登录和验证码。

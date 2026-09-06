@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "commercial-1688-draft-tool"
-version = "0.2.0"
+version = "0.3.0"
 description = "Draft-only 1688 collection and seller workflow"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 draft-tool = "draft_tool.cli:main"
 draft-collect = "draft_tool.collector:main"
+commercial-draft-launcher = "draft_tool.launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

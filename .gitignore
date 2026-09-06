@@ -4,10 +4,10 @@ __pycache__/
 .venv/
 dist/
 build/
+*.spec
 *.egg-info/
 .local/
 data/
 runtime/
 config/settings.local.json
 *.log
-
