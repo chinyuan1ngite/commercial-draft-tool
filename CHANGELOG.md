@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3 - 2026-09-07
+
+- Defaulted the publishing category to the collected source leaf category.
+- Kept explicitly configured or captured target categories as overrides.
+- Added category-source regression coverage.
+
 ## 0.4.2 - 2026-09-07
 
 - Fixed hidden total-stock controls from contaminating interval price fields.

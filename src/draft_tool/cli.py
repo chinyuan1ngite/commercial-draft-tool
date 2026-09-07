@@ -38,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
     config = AppConfig.from_file(args.config.resolve())
+    try:
+        product_payload = json.loads(args.product.resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        product_payload = {}
+    source_category = product_payload.get("category") if isinstance(product_payload, dict) else {}
     target = config.effective_target({
         "category_id": args.category_id,
         "category_name": args.category_name,
@@ -46,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         "freight_template_text": args.freight_template_text,
         "delivery_promise": args.delivery_promise,
         "package_weight_grams": args.package_weight_grams,
-    })
+    }, source_category if isinstance(source_category, dict) else {})
     gate = validate_product(args.product.resolve(), target, config.quality)
     if args.validate_only:
         print(json.dumps(gate, ensure_ascii=False, indent=2))

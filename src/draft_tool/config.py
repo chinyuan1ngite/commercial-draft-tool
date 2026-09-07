@@ -93,11 +93,29 @@ class AppConfig:
             object.__setattr__(instance.target, "package_weight_grams", weight)
         return instance
 
-    def effective_target(self, overrides: dict[str, Any]) -> TargetConfig:
+    def effective_target(
+        self,
+        overrides: dict[str, Any],
+        source_category: dict[str, Any] | None = None,
+    ) -> TargetConfig:
+        source_category = source_category or {}
+        explicit_category_id = overrides.get("category_id") not in (None, "") or bool(
+            str(self.target.category_id or "").strip()
+        )
+        explicit_category_name = overrides.get("category_name") not in (None, "") or bool(
+            str(self.target.category_name or "").strip()
+        )
         values = {
             key: overrides.get(key) if overrides.get(key) not in (None, "") else getattr(self.target, key)
             for key in TargetConfig.__dataclass_fields__
         }
+        # A collected product already contains its source leaf category. Use it
+        # as the default publishing category, while keeping an explicitly
+        # configured/captured target category authoritative.
+        if not str(values.get("category_id") or "").strip():
+            values["category_id"] = source_category.get("category_id") or source_category.get("leaf_id")
+        if not explicit_category_name and not explicit_category_id:
+            values["category_name"] = source_category.get("category_name") or source_category.get("leaf_name")
         values = {key: value.strip() if isinstance(value, str) else value for key, value in values.items()}
         if values["package_weight_grams"] is not None:
             values["package_weight_grams"] = int(values["package_weight_grams"])

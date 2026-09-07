@@ -6,10 +6,24 @@ from pathlib import Path
 from PIL import Image
 
 from draft_tool.config import QualityConfig, TargetConfig
+from draft_tool.config import AppConfig
 from draft_tool.quality_gate import validate_product
 
 
 class QualityGateTests(unittest.TestCase):
+    def test_source_leaf_category_is_default_but_explicit_target_wins(self):
+        config = AppConfig(target=TargetConfig(store_identity_text="店铺"))
+        source = {"leaf_id": 123648007, "leaf_name": "戏水玩具"}
+        target = config.effective_target({}, source)
+        self.assertEqual(target.category_id, 123648007)
+        self.assertEqual(target.category_name, "戏水玩具")
+        explicit = config.effective_target({"category_id": "1045531", "category_name": "目标类目"}, source)
+        self.assertEqual(explicit.category_id, "1045531")
+        self.assertEqual(explicit.category_name, "目标类目")
+        explicit_id_only = config.effective_target({"category_id": "1045531"}, source)
+        self.assertEqual(explicit_id_only.category_id, "1045531")
+        self.assertIsNone(explicit_id_only.category_name)
+
     def make_product(self, root: Path) -> Path:
         (root / "assets").mkdir()
         (root / "detail-assets").mkdir()
