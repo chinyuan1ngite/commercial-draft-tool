@@ -4,7 +4,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from draft_tool.collector import is_product_image, parse_images, _normalize_sku_name
+from draft_tool.collector import is_product_image, parse_attributes, parse_images, _normalize_sku_name
 from draft_tool.security import DraftLedger, hostname_allowed, profile_lock
 
 
@@ -29,6 +29,23 @@ class SecurityAndCollectorTests(unittest.TestCase):
     def test_unstructured_images_are_not_guessed(self):
         html = '<html><img src="https://cbu01.alicdn.com/untrusted.jpg"></html>'
         self.assertEqual(parse_images(BeautifulSoup(html, "html.parser"), html), [])
+
+    def test_structured_decision_attributes_are_collected(self):
+        html = '''<html><div class="decision-attributes-list">
+          <li><p>材质</p><p>塑料/塑胶</p></li>
+          <li><p>功能</p><p>益智</p></li>
+          <li><p>包装方式</p><p>网袋</p></li>
+        </div></html>'''
+        attrs = parse_attributes(BeautifulSoup(html, "html.parser"))
+        self.assertEqual(attrs["材质"], "塑料/塑胶")
+        self.assertEqual(attrs["功能"], "益智")
+        self.assertEqual(attrs["包装方式"], "网袋")
+
+    def test_legacy_material_label_is_canonicalized(self):
+        html = '''<html><h1>商品属性</h1><table><tr><th>玩具材质</th><td>塑胶</td></tr></table></html>'''
+        attrs = parse_attributes(BeautifulSoup(html, "html.parser"))
+        self.assertEqual(attrs["玩具材质"], "塑胶")
+        self.assertEqual(attrs["材质"], "塑胶")
 
     def test_ledger_key_is_store_and_offer(self):
         with tempfile.TemporaryDirectory() as folder:

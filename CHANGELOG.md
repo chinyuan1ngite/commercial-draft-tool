@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4 - 2026-09-07
+
+- Collected structured 1688 decision attributes such as material, function, and packaging method from the newer page layout.
+- Canonicalized legacy material labels such as `玩具材质` to `材质` for target-category matching.
+- Source-collected attribute values are used automatically; category rules are only needed for missing values or intentional overrides.
+
 ## 0.4.3 - 2026-09-07
 
 - Defaulted the publishing category to the collected source leaf category.

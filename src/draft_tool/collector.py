@@ -118,6 +118,34 @@ def parse_attributes(soup: BeautifulSoup) -> dict[str, str]:
                     attributes[key] = value
         elif len(cells) == 2 and cells[0] not in {"颜色", "重量(g)"}:
             attributes[cells[0]] = cells[1]
+
+    # Newer 1688 pages render the three decision attributes (and sometimes
+    # the complete attribute set) as div/list blocks instead of a table.  The
+    # visible labels are the source of truth; do not infer values from title
+    # text or SKU names.  Keep this after the table parser so an explicit table
+    # value wins when both renderings are present.
+    structured_pairs: list[tuple[str, str]] = []
+    for item in soup.select(".decision-attributes-list li"):
+        parts = [clean_text(node.get_text(" ", strip=True)) for node in item.find_all(["p", "span"])]
+        parts = [part for part in parts if part]
+        if len(parts) >= 2:
+            structured_pairs.append((parts[0], parts[1]))
+    for item in soup.select(".cpv-attr-item"):
+        label = item.select_one(".cpv-attr-label")
+        value = item.select_one(".cpv-attr-value")
+        if label and value:
+            structured_pairs.append((clean_text(label.get_text(" ", strip=True)), clean_text(value.get_text(" ", strip=True))))
+    for key, value in structured_pairs:
+        if key and value and key not in {"颜色", "重量(g)"} and key not in attributes:
+            attributes[key] = value
+
+    # A few older templates call the same property “玩具材质”.  Preserve the
+    # original key while exposing the canonical label used by seller forms.
+    if "材质" not in attributes:
+        for key, value in attributes.items():
+            if "材质" in key and value:
+                attributes["材质"] = value
+                break
     return attributes
 
 
