@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 - 2026-09-07
+
+- Fixed hidden total-stock controls from contaminating interval price fields.
+- Read interval prices by semantic columns and validate the actual price input.
+- Preview runs now keep the browser open for manual review and clearly report that no draft was saved.
+- DrissionPage target-detach messages remain diagnostic only; save success is decided by draft ID and reopen verification.
+
 ## 0.4.1 - 2026-09-07
 
 - Fixed SKU name cleanup so embedded text such as `（颜色随机）` is preserved.

@@ -1739,6 +1739,16 @@ def fill_number_inputs(page: ChromiumPage, module_id: str, values: list[str]) ->
     module = page.ele(f"css:#{module_id}", timeout=2)
     if not module:
         return 0
+    visible = bool(page.run_js(
+        f"""
+        const node = document.querySelector('#{module_id}');
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+        """
+    ))
+    if not visible:
+        return 0
     inputs = module.eles("tag:input")
     for inp, value in zip(inputs, values):
         _set_input_value(inp, value)
@@ -1774,10 +1784,22 @@ def fill_price_range(page: ChromiumPage, quantity: Any, price: Any) -> int:
     return filled
 
 
+def read_price_range(page: ChromiumPage) -> dict[str, str]:
+    """Read interval pricing by its semantic columns and preview text."""
+    return dict(page.run_js(
+        """
+        const module = document.querySelector('#guid-priceRange');
+        const table = module?.querySelector('tbody tr');
+        if (!table) return {quantity: '', price: '', preview: ''};
+        const cells = Array.from(table.querySelectorAll('td'));
+        const inputValue = index => cells[index]?.querySelector('input')?.value || '';
+        return {quantity: inputValue(1), price: inputValue(2), preview: cells[3]?.innerText?.trim() || ''};
+        """
+    ) or {})
+
+
 def read_price_range_preview(page: ChromiumPage) -> str:
-    return str(page.run_js(
-        "return document.querySelector('#guid-priceRange tbody tr td:last-child')?.innerText || '';"
-    ) or "").strip()
+    return str(read_price_range(page).get("preview") or "").strip()
 
 
 def displayed_price(value: Any) -> str:
@@ -2249,17 +2271,20 @@ def main(argv: list[str] | None = None) -> int:
             page, "guid-totalSales", [str(product.get("stock", {}).get("total_observed", 0))]
         )
         time.sleep(.5)
+        report["fields"]["price_range_values"] = read_price_range(page)
         report["fields"]["price_range_preview"] = read_price_range_preview(page)
-        page_price = displayed_price(report["fields"]["price_range_preview"])
+        page_price = str(report["fields"]["price_range_values"].get("price") or "").strip()
+        if not page_price:
+            page_price = displayed_price(report["fields"]["price_range_preview"])
         if page_price and rendered_for_validation:
             for row in rendered_for_validation:
                 if not row.get("price"):
                     row["price"] = page_price
             report["fields"]["sku_validation"] = validate_target_rows(sku_model, rendered_for_validation)
         expected_price = str(product.get("price", {}).get("primary", 0))
-        if expected_price not in report["fields"]["price_range_preview"]:
+        if not same_number(page_price, expected_price):
             report.setdefault("warnings", []).append(
-                f"区间报价回显异常，期望单价 {expected_price}，实际 {report['fields']['price_range_preview']}"
+                f"区间报价回显异常，期望单价 {expected_price}，实际 {page_price or report['fields']['price_range_preview']}"
             )
 
         # The source explicitly promises 48-hour dispatch. Select that exact
@@ -2515,7 +2540,9 @@ def main(argv: list[str] | None = None) -> int:
                 discover_sku_table(page)
                 reopened_rows = read_sku_table_rows(page)
                 reopened_for_validation = []
-                reopened_page_price = displayed_price(report["state_after_reopen"].get("price_range_preview"))
+                reopened_page_price = str((read_price_range(page).get("price") or "")).strip()
+                if not reopened_page_price:
+                    reopened_page_price = displayed_price(report["state_after_reopen"].get("price_range_preview"))
                 dimensions = list(sku_model.get("dimensions") or [])
                 for index, rendered in enumerate(reopened_rows):
                     source = normalized_sku_rows[index] if index < len(normalized_sku_rows) else {}

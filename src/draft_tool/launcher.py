@@ -229,7 +229,7 @@ class Launcher(tk.Tk):
             arguments.append("--validate-only")
             label = "正在校验"
         elif action == "preview":
-            arguments.append("--preview-only")
+            arguments.extend(["--preview-only", "--keep-open"])
             label = "正在预览填充；如出现登录页，请完成登录，程序会自动继续"
         else:
             if not messagebox.askyesno("保存草稿", "确认打开卖家后台并保存草稿？程序不会正式发布。", parent=self):
@@ -345,7 +345,14 @@ class Launcher(tk.Tk):
                     code, output, callback = value
                     self.process = None
                     self._set_busy(False)
-                    self.status_var.set(f"{EXIT_MESSAGES.get(code, '操作失败')}（退出码 {code}）")
+                    payload = _last_json_object(str(output))
+                    if code == 0 and payload and payload.get("result") == "preview_filled":
+                        status = "预览填充完成（未保存草稿，请人工核对页面）"
+                    elif code == 0 and payload and payload.get("result") == "draft_saved_and_reopened_verified":
+                        status = "草稿已保存并重新打开核验"
+                    else:
+                        status = EXIT_MESSAGES.get(code, "操作失败")
+                    self.status_var.set(f"{status}（退出码 {code}）")
                     if code == 0 and callback:
                         callback(output)
         except queue.Empty:
