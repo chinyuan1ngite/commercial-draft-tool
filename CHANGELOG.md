@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-09-07
+
+- Fixed SKU name cleanup so embedded text such as `（颜色随机）` is preserved.
+- Prevented distinct source SKUs from collapsing into duplicate `随机）` combinations.
+- Added regression coverage for the cleanup behavior.
+
 ## 0.4.0 - 2026-09-07
 
 - Added interactive target-category capture from the seller category selection flow.

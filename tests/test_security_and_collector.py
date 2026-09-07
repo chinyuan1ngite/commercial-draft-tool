@@ -4,11 +4,16 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from draft_tool.collector import is_product_image, parse_images
+from draft_tool.collector import is_product_image, parse_images, _normalize_sku_name
 from draft_tool.security import DraftLedger, hostname_allowed, profile_lock
 
 
 class SecurityAndCollectorTests(unittest.TestCase):
+    def test_sku_name_cleanup_keeps_embedded_color_word(self):
+        self.assertEqual(_normalize_sku_name("颜色 红色"), "红色")
+        self.assertEqual(_normalize_sku_name("颜色随机款"), "颜色随机款")
+        self.assertEqual(_normalize_sku_name("大沙车5件套（颜色随机）"), "大沙车5件套（颜色随机）")
+
     def test_hostname_validation_is_exact_and_https_only(self):
         self.assertTrue(hostname_allowed("https://cbu01.alicdn.com/a.jpg"))
         self.assertFalse(hostname_allowed("http://cbu01.alicdn.com/a.jpg"))

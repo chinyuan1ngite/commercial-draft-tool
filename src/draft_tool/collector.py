@@ -126,7 +126,13 @@ def _normalize_sku_name(value: str) -> str:
     # Decode it before applying status/quantity cleanup so the same source SKU
     # has a stable value regardless of which rendering path supplied it.
     name = clean_text(html_lib.unescape(value))
-    name = re.sub(r".*?(?:颜色|商品详情|加采购车)\s*", "", name).strip()
+    # Rendered rows may start with the UI label ``颜色`` (for example
+    # ``颜色 红色``), but a real SKU value can also contain that word in a
+    # suffix such as ``大沙车5件套（颜色随机）``.  Only remove the label when
+    # it is a standalone prefix; the previous non-greedy expression removed
+    # everything through the last matching word and collapsed distinct SKUs
+    # to the same value (often just ``随机）``).
+    name = re.sub(r"^(?:颜色|商品详情|加采购车)(?:\s+|$)", "", name).strip()
     name = re.sub(r"^(?:盒|件|个)\s*", "", name).strip()
     # "现货", "预售" and similar suffixes describe fulfillment, not a sale
     # property. Keeping them as part of the value creates duplicate or invalid
