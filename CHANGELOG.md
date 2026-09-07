@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-09-07
+
+- Added interactive target-category capture from the seller category selection flow.
+- Added URL/DOM/HTML `catId` evidence checks and explicit operator confirmation before configuration write.
+
 ## 0.3.0 - 2026-09-06
 
 - Added a standalone Windows GUI for collection, configuration, validation, preview, and draft saving.

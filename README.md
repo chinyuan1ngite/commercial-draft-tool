@@ -27,7 +27,7 @@ python -m venv .venv
 
 可选项不代表平台永远允许缺省：如果当前类目或卖家页面把其中某项标记为必填，页面校验仍会阻止保存草稿，并在运行报告中留下原因。已配置的可选项仍执行严格填充和重开核验。
 
-不同类目的规则放在 `category_rules.by_category.<类目ID>` 下。每个类目可配置 `labels`（属性标签到值）、`properties`（属性 ID 到值）和 `manual_required`（必须人工确认的属性 ID）。程序不会猜测缺失的必填属性。
+不同类目的规则放在 `category_rules.by_category.<类目ID>` 下。可先在启动器点击“捕获目标类目”，人工选定叶子类目后由工具读取并确认 `catId`，无需手填数字 ID。每个类目可配置 `labels`（属性标签到值）、`properties`（属性 ID 到值）和 `manual_required`（必须人工确认的属性 ID）。程序不会猜测缺失的必填属性。
 
 ## 先校验再运行
 

@@ -11,6 +11,7 @@ import threading
 import tkinter as tk
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
@@ -35,6 +36,22 @@ def _child_command(mode: str, arguments: list[str]) -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, mode, *arguments]
     return [sys.executable, "-m", "draft_tool.launcher", mode, *arguments]
+
+
+def _last_json_object(output: str) -> dict | None:
+    decoder = json.JSONDecoder()
+    candidates: list[dict] = []
+    for index, char in enumerate(output):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(output[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            candidates.append(value)
+    with_result = [item for item in candidates if "result" in item]
+    return max(with_result or candidates, key=lambda item: len(json.dumps(item, ensure_ascii=False)), default=None)
 
 
 def _chrome_path() -> str:
@@ -153,8 +170,10 @@ class Launcher(tk.Tk):
         self.validate_button = ttk.Button(actions, text="数据校验", command=lambda: self.run_product("validate"))
         self.preview_button = ttk.Button(actions, text="预览填充", command=lambda: self.run_product("preview"))
         self.save_button = ttk.Button(actions, text="保存草稿", command=lambda: self.run_product("save"))
+        self.capture_category_button = ttk.Button(actions, text="捕获目标类目", command=self.capture_category)
         for button in (self.validate_button, self.preview_button, self.save_button):
             button.pack(side="left", padx=(0, 8))
+        self.capture_category_button.pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="打开数据目录", command=lambda: os.startfile(self.paths["root"])).pack(side="right")
         ttk.Button(actions, text="操作说明", command=self.open_manual).pack(side="right", padx=8)
 
@@ -217,6 +236,56 @@ class Launcher(tk.Tk):
                 return
             label = "正在保存草稿；如出现登录页，请完成登录，程序会自动继续"
         self._start("--cli", arguments, label)
+
+    def capture_category(self) -> None:
+        config = Path(self.config_var.get().strip())
+        capture_dir = self.paths["drafts"] / "category-captures" / uuid.uuid4().hex
+        arguments = [
+            "--profile-dir", str(self.paths["seller_profile"]),
+            "--output-dir", str(capture_dir),
+            "--login-timeout-seconds", "0",
+        ]
+        self._start("--capture-category", arguments, "正在捕获目标类目；请在浏览器中选择叶子类目", self._after_category_capture)
+
+    def _after_category_capture(self, output: str) -> None:
+        payload = _last_json_object(output)
+        if not payload or payload.get("result") != "category_captured":
+            return
+        captured = payload.get("captured") or {}
+        category_id = str(captured.get("category_id") or "").strip()
+        category_name = str(captured.get("category_name") or "").strip()
+        if not category_id.isdigit():
+            messagebox.showerror("类目捕获失败", "页面没有返回有效的数字 catId。", parent=self)
+            return
+        display_name = category_name or "（页面未识别到类目名称）"
+        prompt = f"确认将以下目标叶子类目写入配置吗？\n\n类目：{display_name}\ncatId：{category_id}"
+        if not messagebox.askyesno("确认目标类目", prompt, parent=self):
+            self.status_var.set("已取消写入类目配置")
+            return
+        try:
+            config_path = Path(self.config_var.get())
+            payload_config = json.loads(config_path.read_text(encoding="utf-8"))
+            target = payload_config.setdefault("target", {})
+            target["category_id"] = category_id
+            target["category_name"] = category_name or None
+            payload_config["category_capture"] = {
+                "category_id": category_id,
+                "category_name": category_name or None,
+                "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "method": "seller_category_page",
+                "source_url": captured.get("url"),
+                "report_path": payload.get("report_path"),
+            }
+            validation_path = config_path.with_name("settings.validation.json")
+            atomic_write(validation_path, json.dumps(payload_config, ensure_ascii=False, indent=2))
+            try:
+                AppConfig.from_file(validation_path)
+                os.replace(validation_path, config_path)
+            finally:
+                validation_path.unlink(missing_ok=True)
+            self.status_var.set(f"目标类目已保存：{category_name or category_id}")
+        except Exception as exc:
+            messagebox.showerror("配置未保存", str(exc), parent=self)
 
     def _start(self, mode: str, arguments: list[str], label: str, callback: Callable[[str], None] | None = None) -> None:
         if self.process is not None:
@@ -291,7 +360,7 @@ class Launcher(tk.Tk):
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
-        for button in (self.collect_button, self.validate_button, self.preview_button, self.save_button):
+        for button in (self.collect_button, self.validate_button, self.preview_button, self.save_button, self.capture_category_button):
             button.configure(state=state)
 
     def close(self) -> None:
@@ -307,6 +376,9 @@ def _dispatch(arguments: list[str]) -> int:
     if arguments and arguments[0] == "--collect":
         from draft_tool.collector import main as collector_main
         return collector_main(arguments[1:])
+    if arguments and arguments[0] == "--capture-category":
+        from draft_tool.category_capture import main as capture_main
+        return capture_main(arguments[1:])
     if arguments == ["--smoke-test"]:
         paths = initialize_runtime()
         print(json.dumps({"version": __version__, "runtime": str(paths["root"])}, ensure_ascii=False))
