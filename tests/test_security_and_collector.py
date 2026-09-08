@@ -10,6 +10,9 @@ from draft_tool.collector import (
     is_product_image,
     parse_attributes,
     parse_embedded_skus,
+    parse_embedded_sku_images,
+    build_media_manifest,
+    attach_sku_image_refs,
     parse_images,
     parse_package_weights,
 )
@@ -17,6 +20,22 @@ from draft_tool.security import DraftLedger, hostname_allowed, profile_lock
 
 
 class SecurityAndCollectorTests(unittest.TestCase):
+    def test_structured_sku_image_builds_manifest_reference(self):
+        html = '<script>window.x={"skuMap":[{"skuId":"1","specAttrs":"红","canBookCount":3,"price":"5.2","imageUrl":"https://cbu01.alicdn.com/img/ibank/red.jpg"}]}</script>'
+        images = parse_embedded_sku_images(html)
+        self.assertEqual(images[0]["sku_id"], "1")
+        manifest = build_media_manifest([], [], images)
+        self.assertEqual(manifest["version"], 1)
+        self.assertEqual(manifest["items"][0]["role"], "sku_image")
+        self.assertEqual(manifest["items"][0]["sku_identity"]["sku_id"], "1")
+
+        skus = [{"sku_id": "1", "name": "红"}]
+        attach_sku_image_refs(skus, manifest, images)
+        self.assertEqual(skus[0]["image_ref"], manifest["items"][0]["id"])
+
+    def test_arbitrary_page_image_is_not_a_sku_image(self):
+        html = '<img src="https://cbu01.alicdn.com/img/ibank/ad.jpg">'
+        self.assertEqual(parse_embedded_sku_images(html), [])
     def test_navigation_recovers_from_pending_alert(self):
         class PendingAlertPage:
             def __init__(self):

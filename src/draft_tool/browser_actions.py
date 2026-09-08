@@ -2052,6 +2052,42 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
     ) or [])
 
 
+def probe_sku_image_capability(page: ChromiumPage) -> dict[str, Any]:
+    """Inspect seller-page SKU image controls without changing page state."""
+    return dict(page.run_js(
+        """
+        const root = document.querySelector('#guid-skuTable') || document.body;
+        const visible = node => node && node.offsetParent !== null &&
+          getComputedStyle(node).visibility !== 'hidden' && getComputedStyle(node).display !== 'none';
+        const controls = Array.from(root.querySelectorAll('input[type="file"], button, [role="button"], img'))
+          .filter(visible)
+          .map(node => ({
+            tag: node.tagName.toLowerCase(),
+            type: node.getAttribute('type') || '',
+            text: (node.innerText || node.getAttribute('aria-label') || node.getAttribute('title') || '').trim(),
+            className: String(node.className || '')
+          }))
+          .filter(item => /图|图片|image|pic|上传|upload/i.test([item.text, item.className, item.type].join(' ')));
+        const rows = Array.from(root.querySelectorAll('tbody tr')).filter(visible);
+        const rowImages = rows.map(row => ({
+          text: (row.innerText || '').trim(),
+          images: Array.from(row.querySelectorAll('img')).filter(visible).map(img => img.src || img.getAttribute('data-src') || '').filter(Boolean).length,
+          fileInputs: Array.from(row.querySelectorAll('input[type="file"]')).length
+        }));
+        const labels = Array.from(root.querySelectorAll('[class*="sku"], [class*="spec"], th, td'))
+          .map(node => (node.innerText || '').trim())
+          .filter(text => /图|图片|image|pic/i.test(text));
+        return {
+          supported: controls.length > 0 || rowImages.some(item => item.images || item.fileInputs),
+          scope: rowImages.some(item => item.fileInputs) ? 'sku_row' : (labels.length ? 'property_value_or_unknown' : 'unknown'),
+          controls,
+          row_images: rowImages,
+          labels: Array.from(new Set(labels)).slice(0, 20)
+        };
+        """
+    ) or {})
+
+
 def match_sku_rows_by_specification(
     skus: list[dict[str, Any]], rendered_rows: list[dict[str, Any]]
 ) -> list[int] | None:

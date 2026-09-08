@@ -37,10 +37,119 @@ BLOCK_MARKERS = (
     "请完成验证",
 )
 IMAGE_SKIP_MARKERS = (".svg", "tps-", "rate.jpg", "logo", "icon")
+MEDIA_MANIFEST_VERSION = 1
 
 
 class CollectionError(RuntimeError):
     pass
+
+
+def _media_id(url: str) -> str:
+    return "source-url-sha256:" + hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _sku_image_url(item: dict[str, Any]) -> str:
+    for key in ("imageUrl", "imageURI", "imageUri", "image", "picUrl", "skuImage"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            value = value.get("url") or value.get("imageURI") or value.get("fullPathImageURI")
+        value = normalize_image_url(str(value or "").strip())
+        if value and is_product_image(value):
+            return value
+    return ""
+
+
+def _manifest_item(
+    url: str,
+    role: str,
+    *,
+    sku_id: str = "",
+    specification: dict[str, str] | None = None,
+    evidence: str = "",
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "id": _media_id(url),
+        "type": "image",
+        "role": role,
+        "source_url": url,
+        "local_path": None,
+        "sha256": None,
+        "status": "pending",
+        "source_evidence": evidence,
+    }
+    if sku_id or specification:
+        item["sku_identity"] = {
+            "sku_id": sku_id or None,
+            "specification": dict(specification or {}),
+        }
+    return item
+
+
+def build_media_manifest(
+    main_urls: list[str],
+    detail_urls: list[str],
+    sku_images: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the versioned image manifest without guessing media ownership."""
+    items: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for url in main_urls:
+        normalized = normalize_image_url(url)
+        if not is_product_image(normalized):
+            continue
+        key = ("main_image", normalized)
+        if key not in by_key:
+            by_key[key] = _manifest_item(normalized, "main_image", evidence="structured_gallery")
+    for url in detail_urls:
+        normalized = normalize_image_url(url)
+        if not is_product_image(normalized):
+            continue
+        key = ("detail_image", normalized)
+        if key not in by_key:
+            by_key[key] = _manifest_item(normalized, "detail_image", evidence="detail_description")
+    for entry in sku_images:
+        url = normalize_image_url(str(entry.get("url") or ""))
+        if not is_product_image(url):
+            continue
+        sku_id = str(entry.get("sku_id") or "").strip()
+        specification = entry.get("specification") if isinstance(entry.get("specification"), dict) else {}
+        key = ("sku_image", url)
+        item = by_key.get(key)
+        if item is None:
+            item = _manifest_item(
+                url, "sku_image", sku_id=sku_id, specification=specification,
+                evidence=str(entry.get("source_evidence") or "skuMap"),
+            )
+            item["sku_identities"] = []
+            by_key[key] = item
+        identity = {"sku_id": sku_id or None, "specification": dict(specification or {})}
+        if identity not in item.setdefault("sku_identities", []):
+            item["sku_identities"].append(identity)
+    items = list(by_key.values())
+    return {"version": MEDIA_MANIFEST_VERSION, "items": items}
+
+
+def attach_sku_image_refs(
+    skus: list[dict[str, Any]], manifest: dict[str, Any], sku_images: list[dict[str, Any]]
+) -> None:
+    """Attach manifest IDs to source SKU rows without copying media metadata."""
+    by_sku_id = {
+        str(entry.get("sku_id") or "").strip(): entry
+        for entry in sku_images if str(entry.get("sku_id") or "").strip()
+    }
+    by_url = {
+        str(item.get("source_url") or ""): item
+        for item in manifest.get("items") or []
+        if item.get("role") == "sku_image"
+    }
+    for sku in skus:
+        source_id = str(sku.get("sku_id") or "").strip()
+        entry = by_sku_id.get(source_id)
+        if entry is None:
+            continue
+        item = by_url.get(str(entry.get("url") or ""))
+        if item:
+            sku["image_ref"] = item.get("id")
 
 
 def now_iso() -> str:
@@ -412,6 +521,38 @@ def parse_embedded_skus(html: str, default_price: float | None = None) -> list[d
     return skus
 
 
+def parse_embedded_sku_images(html: str) -> list[dict[str, Any]]:
+    """Extract SKU image URLs only from structured SKU records."""
+    embedded = html_lib.unescape(html)
+    marker = '"skuMap":'
+    start = embedded.find(marker)
+    if start < 0:
+        return []
+    array_start = embedded.find("[", start + len(marker))
+    if array_start < 0:
+        return []
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(embedded[array_start:])
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        url = _sku_image_url(item)
+        if not url:
+            continue
+        result.append({
+            "url": url,
+            "sku_id": str(item.get("skuId") or item.get("sku_id") or "").strip(),
+            "specification": item.get("properties") or item.get("specProps") or item.get("skuProps") or {},
+            "source_evidence": "skuMap.image",
+        })
+    return result
+
+
 def _structured_image_urls(html: str) -> list[str]:
     """Extract only seller-provided gallery fields, never arbitrary page images."""
     values: list[str] = []
@@ -530,6 +671,9 @@ def parse_html(
     min_order_match = re.search(r"(\d+)\s*(件|盒|个)起批", body)
     min_order = min_order_match.group(0) if min_order_match else (f"{begin_amount.group(1)}件起批" if begin_amount else "")
     parsed_skus = parse_embedded_skus(html, primary_price) or parse_skus(body)
+    sku_image_entries = parse_embedded_sku_images(html)
+    media_manifest = build_media_manifest(gallery_images, [], sku_image_entries)
+    attach_sku_image_refs(parsed_skus, media_manifest, sku_image_entries)
     gallery_images = parse_images(soup, html)
     product = {
         "schema_version": "1.0",
@@ -568,6 +712,7 @@ def parse_html(
         # but it no longer has to reinterpret raw display names.
         "sku_model": normalize_sku_model(parsed_skus),
         "images": gallery_images,
+        "media_manifest": media_manifest,
         "detail_text": parse_detail_text(body),
         "description": {"source_url": "", "html": "", "text": "", "images": []},
         "warnings": warnings,

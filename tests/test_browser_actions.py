@@ -11,6 +11,7 @@ from draft_tool.browser_actions import (
     fill_sku_rows,
     match_sku_rows_by_specification,
     preview_result,
+    probe_sku_image_capability,
     remove_unrequested_checkbox_values,
     safe_required_attribute_default,
     source_property_map,
@@ -18,6 +19,13 @@ from draft_tool.browser_actions import (
 
 
 class BrowserActionTests(unittest.TestCase):
+    def test_sku_image_capability_probe_is_read_only(self):
+        page = MagicMock()
+        page.run_js.return_value = {"supported": True, "scope": "sku_row", "controls": []}
+        result = probe_sku_image_capability(page)
+        self.assertTrue(result["supported"])
+        self.assertEqual(result["scope"], "sku_row")
+        self.assertEqual(page.run_js.call_count, 1)
     def test_missing_ip_license_uses_seller_documented_safe_default(self):
         self.assertEqual(safe_required_attribute_default("是否IP授权"), "否")
         self.assertIsNone(safe_required_attribute_default("品牌"))
