@@ -21,7 +21,12 @@
     "min_image_height": 800,
     "min_detail_width": 300,
     "min_detail_height": 100,
-    "max_image_pixels": 40000000
+    "max_image_pixels": 40000000,
+    "require_sku_images": false
+  },
+  "media": {
+    "collect_sku_images": true,
+    "configure_sku_images": true
   },
   "category_rules": {
     "by_category": {}

@@ -45,6 +45,24 @@ def _saved_paths(product_path: Path, product: dict[str, Any], key: str) -> tuple
     return paths, issues
 
 
+def _sku_image_paths(product_path: Path, product: dict[str, Any]) -> tuple[dict[str, Path], list[str]]:
+    paths: dict[str, Path] = {}
+    issues: list[str] = []
+    for item in (product.get("media_manifest") or {}).get("items") or []:
+        if not isinstance(item, dict) or item.get("role") != "sku_image" or item.get("status") != "saved":
+            continue
+        raw = Path(str(item.get("local_path") or ""))
+        candidate = _resolve_asset_path(product_path, raw, "sku-assets")
+        if not candidate:
+            issues.append(f"SKU 图片路径越界或不存在: {raw}")
+            continue
+        for identity in item.get("sku_identities") or []:
+            sku_id = str(identity.get("sku_id") or "").strip() if isinstance(identity, dict) else ""
+            if sku_id:
+                paths[sku_id] = candidate
+    return paths, issues
+
+
 def _check_images(paths: list[Path], quality: QualityConfig, label: str, min_width: int, min_height: int) -> tuple[list[Path], list[str]]:
     valid: list[Path] = []
     rejected: list[str] = []
@@ -100,6 +118,8 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
         issues.append("包裹重量必须是有效正整数")
     main_paths, main_issues = _saved_paths(product_path, product, "assets")
     detail_paths, detail_issues = _saved_paths(product_path, product, "detail_assets")
+    sku_image_paths, sku_image_issues = _sku_image_paths(product_path, product)
+    issues.extend(sku_image_issues)
     issues.extend(main_issues + detail_issues)
     valid_main, rejected_main = _check_images(
         main_paths, quality, "主图", quality.min_image_width, quality.min_image_height
@@ -115,6 +135,14 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
     if quality.require_detail_images and not valid_detail:
         issues.append("缺少详情图")
     sku_model = normalize_sku_model(product.get("skus") or [])
+    missing_sku_images = [
+        str(row.get("sku_id") or "") for row in sku_model.get("rows") or []
+        if str(row.get("sku_id") or "") not in sku_image_paths
+    ]
+    if quality.require_sku_images and missing_sku_images:
+        issues.append(f"SKU 图片不足: {len(sku_image_paths)}/{len(sku_model.get('rows') or [])}")
+    elif missing_sku_images:
+        warnings.append(f"部分 SKU 缺少图片: {len(missing_sku_images)} 个")
     price = (product.get("price") or {}).get("primary")
     try:
         parsed_price = Decimal(str(price).strip())
@@ -148,6 +176,7 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
             "main_images": len(valid_main),
             "detail_images": len(valid_detail),
             "sku_count": int(sku_model.get("source_count") or 0),
+            "sku_images": len(sku_image_paths),
             "target": asdict(target),
         },
     }
@@ -156,8 +185,7 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
 def write_runtime_product(product_path: Path, output_path: Path) -> Path:
     """Copy approved assets into the run and write a self-contained manifest."""
     product = json.loads(product_path.read_text(encoding="utf-8"))
-    for key in ("assets", "detail_assets"):
-        directory = "assets" if key == "assets" else "detail-assets"
+    for key, directory in (("assets", "assets"), ("detail_assets", "detail-assets")):
         target_dir = output_path.parent / directory
         target_dir.mkdir(parents=True, exist_ok=True)
         for item in product.get(key) or []:
@@ -168,5 +196,15 @@ def write_runtime_product(product_path: Path, output_path: Path) -> Path:
                 destination = target_dir / resolved.name
                 shutil.copyfile(resolved, destination)
                 item["path"] = str(Path(directory) / destination.name)
+    target_dir = output_path.parent / "sku-assets"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for item in (product.get("media_manifest") or {}).get("items") or []:
+        if not isinstance(item, dict) or item.get("role") != "sku_image" or item.get("status") != "saved":
+            continue
+        resolved = _resolve_asset_path(product_path, Path(str(item.get("local_path") or "")), "sku-assets")
+        if resolved:
+            destination = target_dir / resolved.name
+            shutil.copyfile(resolved, destination)
+            item["local_path"] = str(Path("sku-assets") / destination.name)
     atomic_write(output_path, json.dumps(product, ensure_ascii=False, indent=2))
     return output_path

@@ -174,6 +174,21 @@ def _manifest_paths(product_path: Path, product: dict[str, Any], key: str, direc
     return paths, errors
 
 
+def _resolve_manifest_path(product_path: Path, raw: Path, directory: str) -> Path | None:
+    if raw.is_absolute() or not raw.parts or ".." in raw.parts:
+        return None
+    root = (product_path.parent / directory).resolve()
+    lexical = product_path.parent / raw
+    if lexical.is_symlink():
+        return None
+    resolved = lexical.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved if resolved.is_file() else None
+
+
 def resolve_product_asset_paths(product_path: Path, product: dict[str, Any]) -> tuple[list[Path], list[str]]:
     """Resolve only the images recorded by this product's collection manifest.
 
@@ -195,6 +210,98 @@ def resolve_product_asset_paths(product_path: Path, product: dict[str, Any]) -> 
 def resolve_detail_asset_paths(product_path: Path, product: dict[str, Any]) -> tuple[list[Path], list[str]]:
     """Resolve detail images from the same collection manifest."""
     return _manifest_paths(product_path, product, "detail_assets", "detail-assets")
+
+
+def resolve_sku_image_paths(product_path: Path, product: dict[str, Any]) -> tuple[dict[str, Path], list[str]]:
+    """Resolve saved SKU images by their manifest identities."""
+    result: dict[str, Path] = {}
+    errors: list[str] = []
+    manifest = product.get("media_manifest") or {}
+    if manifest.get("version", 1) > 1:
+        return {}, [f"不支持的媒体清单版本: {manifest.get('version')}"]
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict) or item.get("role") != "sku_image":
+            continue
+        if item.get("status") != "saved":
+            continue
+        raw = Path(str(item.get("local_path") or ""))
+        resolved = _resolve_manifest_path(product_path, raw, "sku-assets")
+        if not resolved:
+            errors.append(f"SKU 图片路径越界或不存在: {raw}")
+            continue
+        for identity in item.get("sku_identities") or []:
+            if not isinstance(identity, dict):
+                continue
+            sku_id = str(identity.get("sku_id") or "").strip()
+            if sku_id:
+                result[sku_id] = resolved
+    return result, errors
+
+
+def configure_sku_images(
+    page: ChromiumPage,
+    source_skus: list[dict[str, Any]],
+    sku_image_paths: dict[str, Path],
+    target_rows: list[Any],
+) -> dict[str, Any]:
+    """Fill row-level SKU image inputs when the seller page exposes them."""
+    result: dict[str, Any] = {
+        "status": "skipped" if not sku_image_paths else "unsupported",
+        "requested": len(sku_image_paths),
+        "configured": 0,
+        "failed": [],
+        "scope": "sku_row",
+    }
+    if not sku_image_paths:
+        return result
+    if len(target_rows) != len(source_skus):
+        result.update(status="mapping_ambiguous", reason="target_sku_row_count_mismatch")
+        return result
+    rendered = read_sku_table_rows(page)
+    mapping = match_sku_rows_by_specification(source_skus, rendered)
+    if mapping is None and not rendered:
+        mapping = list(range(len(source_skus)))
+    if mapping is None:
+        result.update(status="mapping_ambiguous", reason="target_sku_rows_could_not_be_matched")
+        return result
+    for source_index, source in enumerate(source_skus):
+        sku_id = str(source.get("sku_id") or "").strip()
+        path = sku_image_paths.get(sku_id)
+        if not path:
+            continue
+        row = target_rows[mapping[source_index]]
+        file_input = row.ele('css:input[type="file"]', timeout=2)
+        if not file_input:
+            result["failed"].append({"sku_id": sku_id, "reason": "row_image_control_missing"})
+            continue
+        try:
+            before = len(row.eles("tag:img"))
+        except Exception:
+            before = 0
+        try:
+            file_input.input(str(path.resolve()))
+            deadline = time.time() + 8
+            confirmed = False
+            while time.time() < deadline:
+                try:
+                    after = len(row.eles("tag:img"))
+                    confirmed = after > before or after > 0
+                except Exception:
+                    confirmed = False
+                if confirmed:
+                    break
+                time.sleep(.25)
+            if confirmed:
+                result["configured"] += 1
+            else:
+                result["failed"].append({"sku_id": sku_id, "reason": "image_preview_not_confirmed"})
+        except Exception as exc:
+            result["failed"].append({"sku_id": sku_id, "reason": type(exc).__name__})
+    if result["configured"] == result["requested"]:
+        result["status"] = "confirmed"
+    elif result["configured"]:
+        result["status"] = "partial"
+    return result
 
 
 def image_info(path: Path) -> dict[str, Any]:
@@ -2644,6 +2751,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--delivery-promise", default="")
     parser.add_argument("--package-weight-grams", type=int)
     parser.add_argument("--category-rules", type=Path, required=True)
+    parser.add_argument("--require-sku-images", action="store_true")
     parser.add_argument("--preview-only", action="store_true")
     parser.add_argument("--save-draft", action="store_true")
     parser.add_argument("--existing-draft-id", default="")
@@ -2674,6 +2782,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("product.json 缺少 source.offer_id，无法确认商品素材归属")
     main_asset_paths, main_asset_errors = resolve_product_asset_paths(args.product, product)
     detail_asset_paths, detail_asset_errors = resolve_detail_asset_paths(args.product, product)
+    sku_image_paths, sku_image_errors = resolve_sku_image_paths(args.product, product)
     if main_asset_errors:
         raise SystemExit("商品主图素材校验失败：" + "；".join(main_asset_errors))
     category_id = str(args.category_id).strip()
@@ -2699,6 +2808,8 @@ def main(argv: list[str] | None = None) -> int:
             "main_images": [str(path) for path in main_asset_paths],
             "detail_images": [str(path) for path in detail_asset_paths],
             "detail_asset_warnings": detail_asset_errors,
+            "sku_image_warnings": sku_image_errors,
+            "sku_images": {key: str(value) for key, value in sku_image_paths.items()},
         },
     }
     try:
@@ -2921,6 +3032,19 @@ def main(argv: list[str] | None = None) -> int:
             "table": {"selected": {"row_count": 0}},
             "rendered": [],
         }
+        if sku_image_paths:
+            report["fields"]["sku_images"] = configure_sku_images(
+                page, normalized_sku_rows, sku_image_paths,
+                page.eles('css:table[data-codex-sku-table="1"] tbody tr'),
+            )
+        else:
+            report["fields"]["sku_images"] = {
+                "status": "skipped", "requested": 0, "configured": 0, "failed": []
+            }
+        if report["fields"]["sku_images"].get("failed"):
+            report.setdefault("warnings", []).append(
+                f"SKU 图片配置失败: {len(report['fields']['sku_images']['failed'])} 个"
+            )
         report["fields"]["sku_rows"] = sku_result["count"]
         report["fields"]["sku_table"] = sku_result.get("table")
         report["fields"]["sku_rendered_rows"] = sku_result.get("rendered")
@@ -3149,6 +3273,15 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 report["result"] = "blocked_invalid_sku_mapping"
                 report.setdefault("warnings", []).append("SKU 映射未通过保存前校验，已阻止保存草稿")
+                save_artifacts(page, args.output_dir, report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 4
+            sku_image_result = report["fields"].get("sku_images") or {}
+            if sku_image_paths and args.require_sku_images and (
+                sku_image_result.get("status") != "confirmed"
+            ):
+                report["result"] = "blocked_sku_images_not_confirmed"
+                report.setdefault("warnings", []).append("SKU 图片为必填，但未全部确认")
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4

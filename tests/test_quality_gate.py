@@ -108,6 +108,16 @@ class QualityGateTests(unittest.TestCase):
             self.assertFalse(result["passed"])
             self.assertIn("未确认目标叶子类目 category_id", result["issues"])
 
+    def test_optional_missing_sku_image_warns_but_required_blocks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.make_product(Path(folder))
+            optional = validate_product(path, self.target(), QualityConfig(require_sku_images=False))
+            self.assertTrue(optional["passed"], optional["issues"])
+            self.assertTrue(any("缺少图片" in item for item in optional["warnings"]))
+            required = validate_product(path, self.target(), QualityConfig(require_sku_images=True))
+            self.assertFalse(required["passed"])
+            self.assertTrue(any("SKU 图片不足" in item for item in required["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()

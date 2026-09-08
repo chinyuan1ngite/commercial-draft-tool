@@ -51,6 +51,11 @@ def default_config_payload(data_dir: Path) -> dict:
             "min_detail_width": 300,
             "min_detail_height": 100,
             "max_image_pixels": 40_000_000,
+            "require_sku_images": False,
+        },
+        "media": {
+            "collect_sku_images": True,
+            "configure_sku_images": True,
         },
         "category_rules": {"by_category": {}},
     }

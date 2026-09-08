@@ -31,6 +31,13 @@ class QualityConfig:
     min_detail_width: int = 300
     min_detail_height: int = 100
     max_image_pixels: int = 40_000_000
+    require_sku_images: bool = False
+
+
+@dataclass(frozen=True)
+class MediaConfig:
+    collect_sku_images: bool = True
+    configure_sku_images: bool = True
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,7 @@ class AppConfig:
     version: int = 1
     target: TargetConfig = field(default_factory=TargetConfig)
     quality: QualityConfig = field(default_factory=QualityConfig)
+    media: MediaConfig = field(default_factory=MediaConfig)
     profile_dir: Path = Path(".local/commercial-seller-browser")
     output_root: Path = Path("data/commercial-drafts")
     category_rules: dict[str, Any] = field(default_factory=dict)
@@ -49,12 +57,14 @@ class AppConfig:
             raise ValueError("配置文件必须是 JSON 对象")
         target = payload.get("target") or {}
         quality = payload.get("quality") or {}
-        if not isinstance(target, dict) or not isinstance(quality, dict):
-            raise ValueError("target 和 quality 必须是 JSON 对象")
+        media = payload.get("media") or {}
+        if not isinstance(target, dict) or not isinstance(quality, dict) or not isinstance(media, dict):
+            raise ValueError("target、quality 和 media 必须是 JSON 对象")
         unknown_target = set(target) - set(TargetConfig.__dataclass_fields__)
         unknown_quality = set(quality) - set(QualityConfig.__dataclass_fields__)
-        if unknown_target or unknown_quality:
-            raise ValueError(f"配置包含未知字段: {sorted(unknown_target | unknown_quality)}")
+        unknown_media = set(media) - set(MediaConfig.__dataclass_fields__)
+        if unknown_target or unknown_quality or unknown_media:
+            raise ValueError(f"配置包含未知字段: {sorted(unknown_target | unknown_quality | unknown_media)}")
         project_root = path.parent.parent if path.parent.name.lower() == "config" else path.parent
         profile_dir = Path(payload.get("profile_dir", ".local/commercial-seller-browser"))
         output_root = Path(payload.get("output_root", "data/commercial-drafts"))
@@ -68,6 +78,10 @@ class AppConfig:
                 key: quality.get(key, getattr(QualityConfig(), key))
                 for key in QualityConfig.__dataclass_fields__
             }),
+            media=MediaConfig(**{
+                key: media.get(key, getattr(MediaConfig(), key))
+                for key in MediaConfig.__dataclass_fields__
+            }),
             profile_dir=profile_dir if profile_dir.is_absolute() else project_root / profile_dir,
             output_root=output_root if output_root.is_absolute() else project_root / output_root,
             category_rules=dict(payload.get("category_rules") or {}),
@@ -75,10 +89,14 @@ class AppConfig:
         numeric_quality = {
             key: getattr(instance.quality, key)
             for key in QualityConfig.__dataclass_fields__
-            if key != "require_detail_images"
+            if key not in {"require_detail_images", "require_sku_images"}
         }
         if not isinstance(instance.quality.require_detail_images, bool):
             raise ValueError("quality.require_detail_images 必须是布尔值")
+        if not isinstance(instance.quality.require_sku_images, bool):
+            raise ValueError("quality.require_sku_images 必须是布尔值")
+        if not all(isinstance(getattr(instance.media, key), bool) for key in MediaConfig.__dataclass_fields__):
+            raise ValueError("media 开关必须是布尔值")
         if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in numeric_quality.values()):
             raise ValueError("quality 数值配置必须为正整数")
         if instance.quality.min_main_images > instance.quality.max_main_images:
@@ -142,5 +160,9 @@ class AppConfig:
                 "package_weight_grams": target.package_weight_grams,
             },
             "category_rules": self.rules_for(target.category_id),
+            "media": {
+                "collect_sku_images": self.media.collect_sku_images,
+                "configure_sku_images": self.media.configure_sku_images,
+            },
         }, ensure_ascii=False, indent=2))
         return path

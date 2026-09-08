@@ -832,11 +832,68 @@ def download_images(
     return results
 
 
+def materialize_sku_images(
+    manifest: dict[str, Any], asset_dir: Path, namespace: str, download: bool
+) -> None:
+    """Download SKU images and replace provisional URL IDs with content IDs."""
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    by_url: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(manifest.get("items") or [], start=1):
+        if not isinstance(item, dict) or item.get("role") != "sku_image":
+            continue
+        url = str(item.get("source_url") or "").strip()
+        if not download:
+            item["status"] = "remote_only"
+            continue
+        if url in by_url:
+            previous = by_url[url]
+            item.update(
+                id=previous.get("id"), sha256=previous.get("sha256"),
+                local_path=previous.get("local_path"), status=previous.get("status"),
+            )
+            continue
+        suffix_match = re.search(r"\.(jpg|jpeg|png|webp)(?:[?_]|$)", url, re.I)
+        suffix = "." + suffix_match.group(1).lower() if suffix_match else ".jpg"
+        safe_namespace = re.sub(r"[^0-9A-Za-z_-]+", "-", namespace).strip("-") or "offer"
+        provisional = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+        path = asset_dir / f"{safe_namespace}-sku-{index:02d}-{provisional}{suffix}"
+        try:
+            if not is_product_image(url):
+                raise ValueError("SKU 图片 URL 未通过 1688 图库主机校验")
+            download_image(url, path, max_bytes=5 * 1024 * 1024)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            item.update(
+                id=f"sha256:{digest}", sha256=digest,
+                local_path=str(Path("sku-assets") / path.name), status="saved",
+            )
+        except Exception as exc:
+            item.update(status="download_failed", error=str(exc), local_path=None, sha256=None)
+        by_url[url] = item
+
+
+def refresh_sku_image_refs(product: dict[str, Any]) -> None:
+    """Update provisional SKU references after content hashing."""
+    manifest = product.get("media_manifest") or {}
+    entries = [item for item in manifest.get("items") or [] if item.get("role") == "sku_image"]
+    for sku in product.get("skus") or []:
+        sku_id = str(sku.get("sku_id") or "").strip()
+        candidates = [
+            item for item in entries
+            if any(str(identity.get("sku_id") or "").strip() == sku_id
+                   for identity in item.get("sku_identities") or [])
+        ]
+        if len(candidates) == 1:
+            sku["image_ref"] = candidates[0].get("id")
+
+
 def save_collection(product: dict[str, Any], html: str, output_dir: Path, download: bool) -> Path:
     offer_id = product["source"]["offer_id"]
     target = output_dir / offer_id
     target.mkdir(parents=True, exist_ok=True)
     atomic_write(target / "raw.html", html)
+    manifest = product.setdefault("media_manifest", {"version": MEDIA_MANIFEST_VERSION, "items": []})
+    materialize_sku_images(manifest, target / "sku-assets", offer_id, download)
+    refresh_sku_image_refs(product)
     if download:
         product["assets"] = download_images(
             product.get("images", []), target / "assets", namespace=offer_id

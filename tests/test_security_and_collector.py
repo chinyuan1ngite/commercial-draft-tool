@@ -13,6 +13,8 @@ from draft_tool.collector import (
     parse_embedded_sku_images,
     build_media_manifest,
     attach_sku_image_refs,
+    materialize_sku_images,
+    refresh_sku_image_refs,
     parse_images,
     parse_package_weights,
 )
@@ -36,6 +38,20 @@ class SecurityAndCollectorTests(unittest.TestCase):
     def test_arbitrary_page_image_is_not_a_sku_image(self):
         html = '<img src="https://cbu01.alicdn.com/img/ibank/ad.jpg">'
         self.assertEqual(parse_embedded_sku_images(html), [])
+
+    def test_sku_images_are_remote_only_when_download_disabled(self):
+        manifest = build_media_manifest([], [], [{"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "sku_id": "1"}])
+        materialize_sku_images(manifest, Path(tempfile.mkdtemp()) / "sku-assets", "100", False)
+        self.assertEqual(manifest["items"][0]["status"], "remote_only")
+
+    def test_sku_image_refs_refresh_to_content_hash(self):
+        manifest = {"version": 1, "items": [{
+            "id": "sha256:abc", "role": "sku_image", "source_url": "x",
+            "sku_identities": [{"sku_id": "1", "specification": {}}],
+        }]}
+        product = {"media_manifest": manifest, "skus": [{"sku_id": "1"}]}
+        refresh_sku_image_refs(product)
+        self.assertEqual(product["skus"][0]["image_ref"], "sha256:abc")
     def test_navigation_recovers_from_pending_alert(self):
         class PendingAlertPage:
             def __init__(self):

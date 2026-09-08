@@ -40,6 +40,7 @@ def run_save_draft(
         "--category-id", str(target.category_id),
         "--store-identity-text", str(target.store_identity_text),
         "--category-rules", str(rules_path.resolve()),
+        "--require-sku-images" if config.quality.require_sku_images else "",
         "--login-timeout-seconds", str(login_timeout_seconds),
         "--keep-open" if keep_open else "",
         "--preview-only" if preview_only else "--save-draft",
