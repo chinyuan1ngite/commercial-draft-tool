@@ -28,7 +28,8 @@ def _decimal(value: Any) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
-def _valid_price(value: Any) -> bool:
+def is_valid_sku_price(value: Any) -> bool:
+    """Return whether a value can be represented by the seller price field."""
     parsed = _decimal(value)
     return parsed is not None and Decimal("0") < parsed <= MAX_PRICE
 
@@ -141,7 +142,7 @@ def normalize_sku_model(skus: list[dict[str, Any]] | None, max_dimensions: int =
     duplicate_combinations = len(combinations) != len(set(combinations))
     if duplicate_combinations:
         warnings.append("源 SKU 存在重复规格组合")
-    if any(not row["name"] or not _valid_price(row["price"]) or not _valid_stock(row["stock"]) for row in normalized):
+    if any(not row["name"] or not is_valid_sku_price(row["price"]) or not _valid_stock(row["stock"]) for row in normalized):
         warnings.append("SKU 存在空名称、非法价格或库存（含 NaN、Infinity、小数库存、负数或溢出）")
 
     expected_matrix = 1
@@ -193,9 +194,14 @@ def validate_target_rows(model: dict[str, Any], target_rows: list[dict[str, Any]
         expected_stock = _decimal(expected_row.get("stock"))
         if stock is None or expected_stock is None or stock != expected_stock or stock != stock.to_integral_value():
             issues.append(f"第 {index} 行库存与源数据不一致")
-        expected_sku_id = clean_sku_value(expected_row.get("sku_id"))
-        if clean_sku_value(row.get("sku_id")) != expected_sku_id:
-            issues.append(f"第 {index} 行单品货号与源数据不一致")
+        # The visible seller field is a merchant code. The platform may keep
+        # its internal SKU identity in a hidden attribute or regenerate it
+        # after dimensions are added, so only compare IDs when that identity
+        # was actually exposed by the target page.
+        if row.get("sku_identity_available", True):
+            expected_sku_id = clean_sku_value(expected_row.get("sku_id"))
+            if clean_sku_value(row.get("sku_id")) != expected_sku_id:
+                issues.append(f"第 {index} 行平台 SKU 标识与源数据不一致")
     if len(combinations) != len(set(combinations)):
         issues.append("目标页面存在重复规格组合")
     return {"valid": not issues, "expected_rows": expected, "actual_rows": len(rows), "issues": issues}

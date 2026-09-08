@@ -21,7 +21,8 @@ from urllib.parse import urlparse
 from DrissionPage import ChromiumOptions, ChromiumPage
 from PIL import Image
 
-from .sku_adapter import normalize_sku_model, validate_target_rows
+from .browser_navigation import navigate_with_alert_recovery
+from .sku_adapter import clean_sku_value, normalize_sku_model, validate_target_rows
 from .security import atomic_write
 
 
@@ -34,6 +35,29 @@ SELLER_LOGIN_HOSTS = frozenset({
     "passport.alibaba.com",
     "login.alibaba.com",
 })
+SKU_PRICE_HINT = re.compile(r"批发价|单价|price|价格|售价|报价", re.I)
+SKU_PRICE_EXCLUDE_HINT = re.compile(r"报价方式", re.I)
+SKU_STOCK_HINT = re.compile(r"可售数量|库存|stock|数量", re.I)
+SKU_CODE_HINT = re.compile(r"单品货号|商家编码|货号", re.I)
+SKU_CODE_EXCLUDE_HINT = re.compile(r"SKU分类", re.I)
+
+# The seller form explicitly documents that products without a license must
+# choose "否".  This is a safe, label-based default for the required field
+# when the source listing does not expose an IP-license attribute.  Other
+# missing required attributes remain blocked until configured explicitly.
+SAFE_REQUIRED_ATTRIBUTE_DEFAULTS = {
+    "是否IP授权": "否",
+}
+
+
+def _is_sku_price_hint(value: Any) -> bool:
+    text = str(value or "")
+    return bool(SKU_PRICE_HINT.search(text) and not SKU_PRICE_EXCLUDE_HINT.search(text))
+
+
+def _is_sku_code_hint(value: Any) -> bool:
+    text = str(value or "")
+    return bool(SKU_CODE_HINT.search(text) and not SKU_CODE_EXCLUDE_HINT.search(text))
 
 
 def is_seller_login_url(value: Any) -> bool:
@@ -77,9 +101,17 @@ def open_seller_page(
     announced = False
     while True:
         try:
-            page.get(url)
-        except Exception:
-            return "browser_closed"
+            navigate_with_alert_recovery(page, url)
+        except Exception as exc:
+            try:
+                str(page.url)
+            except Exception:
+                return "browser_closed"
+            # CDP navigation failures (including a transient target loss) are
+            # actionable workflow outcomes. Returning a status lets callers
+            # persist a report and continue cleanup instead of terminating the
+            # whole batch with an uncaught exception.
+            return f"navigation_error:{type(exc).__name__}"
         time.sleep(2)
         try:
             current_url = str(page.url)
@@ -818,11 +850,56 @@ def selected_prop_value(page: ChromiumPage, prop_id: str) -> str:
         """
         const box = document.querySelector(`[cat-prop-id="${arguments[0]}"]`);
         if (!box) return '';
+        const tags = Array.from(box.querySelectorAll('.next-tag-body, .ant-select-selection-item'))
+          .map(node => (node.innerText || node.textContent || '').trim())
+          .filter(Boolean);
+        if (tags.length) return tags.join(',');
         const values = box.querySelector('.next-select-values');
-        return (values?.innerText || values?.textContent || '').trim();
+        const selected = box.querySelector('.next-select-selection-item, .ant-select-selection-item');
+        const input = box.querySelector('input');
+        const value = (values?.innerText || values?.textContent || selected?.innerText ||
+          input?.getAttribute('aria-valuetext') || input?.value || '').trim();
+        const placeholder = (input?.getAttribute('placeholder') || '').trim();
+        const emptyValues = new Set(['请选择', '如无合适选项可直接输入填写（可多选）', '如无合适选项可直接输入填写']);
+        return value && value !== placeholder && !emptyValues.has(value) ? value : '';
         """,
         prop_id,
     ) or "").strip()
+
+
+def remove_unrequested_checkbox_values(
+    page: ChromiumPage, prop_id: str, requested_values: list[str]
+) -> list[str]:
+    """Remove seller-page prefill values that conflict with the source list."""
+    removed: list[str] = []
+    for _ in range(6):
+        value = str(page.run_js(
+            r"""
+            const box = document.querySelector(`[cat-prop-id="${arguments[0]}"]`);
+            if (!box) return '';
+            const wanted = new Set(JSON.parse(arguments[1] || '[]')
+              .map(value => String(value || '').replace(/\s+/g, '')));
+            const tags = Array.from(box.querySelectorAll('.next-tag, .ant-select-selection-item'));
+            const extra = tags.find(tag => {
+              const body = tag.querySelector('.next-tag-body') || tag;
+              const text = (body.innerText || body.textContent || '').trim();
+              return text && !wanted.has(text.replace(/\s+/g, ''));
+            });
+            if (!extra) return '';
+            const text = ((extra.querySelector('.next-tag-body') || extra).innerText || '').trim();
+            const close = extra.querySelector('.next-tag-close-btn, .ant-select-selection-item-remove');
+            if (!close) return '';
+            close.click();
+            return text;
+            """,
+            prop_id,
+            json.dumps(requested_values, ensure_ascii=False),
+        ) or "").strip()
+        if not value:
+            break
+        removed.append(value)
+        time.sleep(.2)
+    return removed
 
 
 def fill_delivery_time(page: ChromiumPage, value: str) -> str:
@@ -948,6 +1025,38 @@ def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip()
 
 
+def safe_required_attribute_default(label: Any, prop_id: Any = None) -> str | None:
+    """Return a documented safe default for a missing required property."""
+    normalized = re.sub(r"[：:*＊]", "", _compact_text(label))
+    for candidate, value in SAFE_REQUIRED_ATTRIBUTE_DEFAULTS.items():
+        expected = re.sub(r"[：:*＊]", "", _compact_text(candidate))
+        if normalized == expected or expected in normalized:
+            return value
+    return None
+
+
+def _requested_property_parts(value: Any) -> list[str]:
+    # Slash is part of legitimate enum labels such as "塑料/塑胶".
+    parts = [part.strip() for part in re.split(r"[,，、]", str(value or "")) if part.strip()]
+    # "不限" is mutually exclusive with concrete audience values on the
+    # seller form.  Treat it as a source-side placeholder when specific values
+    # are also present instead of trying to toggle an already selected option.
+    if len(parts) > 1 and "不限" in parts:
+        parts = [part for part in parts if part != "不限"]
+    return parts
+
+
+def _property_values_match(displayed: Any, requested_values: list[str]) -> bool:
+    shown_parts = [
+        part.strip() for part in re.split(r"[,，、]", str(displayed or "")) if part.strip()
+    ]
+    if not shown_parts or not requested_values:
+        return False
+    shown = {_compact_text(part) for part in shown_parts}
+    requested = {_compact_text(part) for part in requested_values}
+    return shown == requested if len(requested_values) == 1 else requested.issubset(shown)
+
+
 def fill_shipping_address(page: ChromiumPage, preferred: str) -> dict[str, Any]:
     """Select the requested saved shipping address from the seller dropdown."""
     result: dict[str, Any] = {
@@ -1032,16 +1141,60 @@ def fill_freight_template(page: ChromiumPage, preferred: str) -> dict[str, Any]:
     return result
 
 
-def fill_default_package_weight(page: ChromiumPage, weight_grams: int) -> dict[str, Any]:
-    """Fill a default weight for every SKU row when source dimensions are absent.
+def fill_package_weights(
+    page: ChromiumPage,
+    source_weights: list[dict[str, Any]] | None,
+    default_weight_grams: int | None = None,
+) -> dict[str, Any]:
+    """Fill weights only when source data or an explicit default is available.
 
     The official logistics module stores weight in grams. Dimensions remain blank
     because inventing length/width/height would be less reliable than leaving
     those fields for later manual confirmation.
     """
+    configured_weight: int | None = None
+    if default_weight_grams is not None and not isinstance(default_weight_grams, bool):
+        try:
+            candidate = int(default_weight_grams)
+        except (TypeError, ValueError):
+            candidate = 0
+        if 0 < candidate <= 1_000_000:
+            configured_weight = candidate
+    valid_source_weights: list[dict[str, Any]] = []
+    for item in source_weights or []:
+        try:
+            raw_weight = item.get("weight_grams")
+            if isinstance(raw_weight, bool):
+                continue
+            numeric_weight = float(raw_weight)
+            if not numeric_weight.is_integer():
+                continue
+            weight = int(numeric_weight)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 0 < weight <= 1_000_000:
+            valid_source_weights.append({
+                "weight_grams": weight,
+                "sku_id": str(item.get("sku_id") or "").strip(),
+            })
+    weight_by_sku = {
+        item["sku_id"]: int(item["weight_grams"])
+        for item in valid_source_weights if item.get("sku_id")
+    }
+    unkeyed_weights = [
+        int(item["weight_grams"]) for item in valid_source_weights if not item.get("sku_id")
+    ]
+    common_weight = (
+        int(valid_source_weights[0]["weight_grams"])
+        if len(valid_source_weights) == 1 and not valid_source_weights[0].get("sku_id")
+        else None
+    )
     result: dict[str, Any] = {
-        "source": "default",
-        "value": weight_grams / 1000,
+        "source": "collected" if valid_source_weights else "default",
+        "default_weight_grams": configured_weight,
+        "source_weights": valid_source_weights,
+        "expected_weights": [],
+        "value": configured_weight / 1000 if configured_weight else None,
         "unit": "kg",
         "page_unit": "g",
         "rows": 0,
@@ -1049,34 +1202,117 @@ def fill_default_package_weight(page: ChromiumPage, weight_grams: int) -> dict[s
         "dimensions_filled": 0,
         "status": "control_missing",
     }
+    if not valid_source_weights and configured_weight is None:
+        result.update(source="none", status="skipped", reason="not_configured")
+        return result
     module = page.ele("css:#guid-officialLogistics", timeout=3)
     if not module:
         return result
     rows = module.eles("css:tbody tr")
     result["rows"] = len(rows)
+    if not rows:
+        result["status"] = "no_rows"
+        return result
+
+    def row_sku_id(row: Any) -> str:
+        value = str(
+            row.attr("data-sku-id") or row.attr("data-skuid") or row.attr("data-skuId") or ""
+        ).strip()
+        if value:
+            return value
+        hidden = next(
+            (item for item in row.eles('css:input[type="hidden"]')
+             if re.search(r"sku|货号|编码", str(item.attr("name") or ""), re.I)),
+            None,
+        )
+        return str(hidden.attr("value") or "").strip() if hidden else ""
+
+    row_ids = [row_sku_id(row) for row in rows]
+    keyed_distinct = {value for value in weight_by_sku.values()}
+    if len(keyed_distinct) > 1 and any(not value for value in row_ids):
+        result.update(status="mapping_ambiguous", reason="target_rows_missing_sku_id")
+        return result
+    if len(set(unkeyed_weights)) > 1:
+        result.update(status="mapping_ambiguous", reason="unkeyed_source_weights")
+        return result
+
+    expected_weights: list[int] = []
+    for row_id in row_ids:
+        weight = weight_by_sku.get(row_id) if row_id else None
+        if weight is None and common_weight is not None:
+            weight = common_weight
+        if weight is None and len(keyed_distinct) == 1 and len(weight_by_sku) >= len(rows):
+            weight = next(iter(keyed_distinct))
+        if weight is None and len(unkeyed_weights) == 1:
+            weight = unkeyed_weights[0]
+        if weight is None:
+            weight = configured_weight
+        if weight is None:
+            result.update(status="mapping_incomplete", reason="source_weight_missing")
+            return result
+        expected_weights.append(weight)
+    result["expected_weights"] = expected_weights
+
     # The module provides a batch field which commits all rows through its
     # React state, avoiding the occasional last-row loss seen with direct input.
     batch_input = module.ele('css:.measured-image-batch-bar__input input[placeholder="重量"]', timeout=1)
     batch_submit = module.ele('css:.measured-image-batch-bar__submit', timeout=1)
-    if batch_input and batch_submit:
-        batch_input.input(str(weight_grams), clear=True)
+    unique_expected = set(expected_weights)
+    batch_weight = next(iter(unique_expected)) if len(unique_expected) == 1 else None
+    if batch_input and batch_submit and batch_weight is not None:
+        batch_input.input(str(batch_weight), clear=True)
         batch_submit.click()
-        time.sleep(.5)
-    for row in rows:
-        inputs = row.eles("tag:input")
+        time.sleep(.6)
+        visible_values = list(page.run_js(
+            """
+            return Array.from(document.querySelectorAll('#guid-officialLogistics tbody tr'))
+              .map(row => {
+                const inputs = Array.from(row.querySelectorAll('input:not([type="hidden"])'));
+                const weight = inputs.find(input => /重量|weight/i.test([
+                  input.name, input.placeholder, input.getAttribute('data-field')
+                ].join(' '))) || inputs[3];
+                return weight?.value || '';
+              })
+              .filter(Boolean);
+            """
+        ) or [])
+        result["filled"] = sum(1 for item in visible_values if same_number(item, batch_weight))
+        if result["filled"] == len(rows):
+            result["status"] = "filled"
+            return result
+        result["filled"] = 0
+    for index, row in enumerate(rows):
+        inputs = row.eles('css:input:not([type="hidden"])')
         if len(inputs) < 4:
             continue
-        # Inputs are ordered as length, width, height, weight (g).
-        value = str(inputs[3].attr('value') or '')
+        # Inputs are ordered as length, width, height, weight (g). Prefer a
+        # semantic weight hint when a template inserts an extra visible field.
+        weight_input = next(
+            (item for item in reversed(inputs)
+             if re.search(r"重量|weight", " ".join(
+                 str(item.attr(key) or "") for key in ("name", "placeholder", "data-field")
+             ), re.I)),
+            inputs[3],
+        )
+        weight_grams = expected_weights[index]
+        value = str(weight_input.attr('value') or '')
         if value != str(weight_grams):
-            inputs[3].input(str(weight_grams), clear=True)
+            weight_input.input(str(weight_grams), clear=True)
             page.ele('css:#guid-title input', timeout=1).click()
             time.sleep(.15)
-            value = str(inputs[3].attr('value') or '')
+            value = str(weight_input.attr('value') or '')
         if value == str(weight_grams):
             result["filled"] += 1
-    result["status"] = "filled" if result["filled"] else "no_rows"
+    if result["filled"] == len(rows):
+        result["status"] = "filled"
+    else:
+        result["status"] = "partial"
     return result
+
+
+def fill_default_package_weight(page: ChromiumPage, weight_grams: int) -> dict[str, Any]:
+    """Backward-compatible wrapper for callers using the former API."""
+    return fill_package_weights(page, None, default_weight_grams=weight_grams)
 
 
 def insert_detail_images(
@@ -1372,26 +1608,26 @@ def click_visible_text(page: ChromiumPage, value: str) -> bool:
 
 
 def click_best_visible_option(page: ChromiumPage, value: str) -> str:
-    """Click an option that exactly or semantically matches a property value."""
+    """Click an exact option in the most recently opened visible dropdown."""
     return str(page.run_js(
         """
         const wanted = (arguments[0] || '').trim();
         const normalize = value => (value || '').replace(/[\\s\\/\\-_,，、]/g, '').toLowerCase();
         const selectors = ['.next-menu-item', '.next-menu-item-inner', '.ant-select-item-option', '[role="option"]'];
-        const options = Array.from(document.querySelectorAll(selectors.join(',')))
+        const visible = node => node && node.offsetParent !== null &&
+          getComputedStyle(node).visibility !== 'hidden' && getComputedStyle(node).display !== 'none';
+        const dropdowns = Array.from(document.querySelectorAll(
+          '.next-overlay-wrapper, .ant-select-dropdown, [role="listbox"]'
+        )).filter(visible);
+        const root = dropdowns.reverse().find(node => node.querySelector(selectors.join(','))) || document;
+        const options = Array.from(root.querySelectorAll(selectors.join(',')))
           .filter(e => e.offsetParent !== null)
           .map(e => ({node: e, text: (e.innerText || e.textContent || '').trim()}))
           .filter(item => item.text);
         const exact = options.find(item => item.text === wanted);
         const normalizedWanted = normalize(wanted);
-        const related = options
-          .filter(item => {
-            const candidate = normalize(item.text);
-            return candidate && normalizedWanted &&
-              (candidate.includes(normalizedWanted) || normalizedWanted.includes(candidate));
-          })
-          .sort((a, b) => Math.abs(a.text.length - wanted.length) - Math.abs(b.text.length - wanted.length));
-        const chosen = exact || related[0];
+        const normalizedExact = options.find(item => normalize(item.text) === normalizedWanted);
+        const chosen = exact || normalizedExact;
         if (!chosen) return '';
         chosen.node.click();
         return chosen.text;
@@ -1436,37 +1672,103 @@ def select_text(page: ChromiumPage, selector: str, value: str) -> bool:
 
 
 def fill_prop(page: ChromiumPage, prop_id: str, value: str) -> bool:
-    box = page.ele(f'css:[cat-prop-id="{prop_id}"]', timeout=3)
-    if not box:
-        return False
-    select = box.ele("tag:select", timeout=1)
-    if select:
-        return select.select.by_text(value)
-    inp = box.ele("tag:input", timeout=1)
-    if not inp:
-        return False
-    prop_type = str(box.attr("cat-prop-type") or "").lower()
-    requested_values = [part.strip() for part in re.split(r"[,，、/]", str(value or "")) if part.strip()]
-    if prop_type == "checkbox" and len(requested_values) > 1:
-        selected = 0
-        for requested in requested_values:
-            inp.click()
-            time.sleep(.25)
-            if click_visible_text(page, requested) or click_best_visible_option(page, requested):
-                selected += 1
-                time.sleep(.25)
-        if selected:
-            return selected == len(requested_values)
-    inp.click()
-    time.sleep(.4)
-    if click_visible_text(page, value):
-        return True
-    if click_best_visible_option(page, value):
-        return True
-    # Customizable fields accept direct text; blur commits the value.
-    inp.input(value, clear=True)
-    page.ele("css:#guid-title input", timeout=2).click()
-    return True
+    requested = str(value or "").strip()
+    for refresh in range(3):
+        try:
+            box = page.ele(f'css:[cat-prop-id="{prop_id}"]', timeout=3)
+            if not box:
+                return False
+            # A category update can replace the property node while it is off
+            # screen. Scroll the fresh node into view before querying controls.
+            try:
+                box.run_js("this.scrollIntoView({block:'center'});")
+            except Exception:
+                pass
+            select = box.ele("tag:select", timeout=1)
+            if select:
+                return bool(select.select.by_text(requested))
+            inp = box.ele("tag:input", timeout=1)
+            if not inp:
+                return False
+            prop_type = str(box.attr("cat-prop-type") or "").lower()
+            placeholder = str(inp.attr("placeholder") or "").strip()
+            trigger = box.ele("css:.next-select-trigger, .ant-select-selector", timeout=1) or inp
+            requested_values = _requested_property_parts(requested)
+            has_checkbox = page.run_js(
+                """
+                const box = document.querySelector(`[cat-prop-id="${arguments[0]}"]`);
+                return Boolean(box?.querySelector('input[type="checkbox"]'));
+                """,
+                prop_id,
+            ) is True
+            is_multi = (
+                prop_type in {"checkbox", "multiselect", "multi-select", "tag"}
+                or "next-select-tag" in str(trigger.attr("class") or "")
+                or "ant-select-multiple" in str(trigger.attr("class") or "")
+                or has_checkbox
+            )
+            if is_multi and requested_values:
+                remove_unrequested_checkbox_values(page, prop_id, requested_values)
+                selected = 0
+                for requested_item in requested_values:
+                    current_parts = {
+                        _compact_text(part)
+                        for part in re.split(r"[,，、]", selected_prop_value(page, prop_id))
+                        if part.strip()
+                    }
+                    if _compact_text(requested_item) in current_parts:
+                        selected += 1
+                        continue
+                    box = page.ele(f'css:[cat-prop-id="{prop_id}"]', timeout=2)
+                    trigger = box.ele("css:.next-select-trigger, .ant-select-selector", timeout=1) if box else None
+                    if not trigger:
+                        continue
+                    trigger.click()
+                    time.sleep(.25)
+                    if click_best_visible_option(page, requested_item):
+                        selected += 1
+                        time.sleep(.25)
+                shown = selected_prop_value(page, prop_id)
+                return selected == len(requested_values) and _property_values_match(
+                    shown, requested_values
+                )
+            # Next/Ant selects may render their menu asynchronously. Retry the
+            # lookup briefly after opening so a valid option is not missed.
+            for attempt in range(3):
+                trigger.click()
+                time.sleep(.4)
+                matched = click_best_visible_option(page, requested)
+                if not matched and "has-search" in str(trigger.attr("class") or ""):
+                    # Async enum controls such as 品牌 do not populate their
+                    # dropdown until the requested text is entered.
+                    inp.input(requested, clear=True)
+                    time.sleep(.7)
+                    matched = click_best_visible_option(page, requested)
+                if matched:
+                    time.sleep(.25)
+                    shown = selected_prop_value(page, prop_id)
+                    if shown and _compact_text(requested) in _compact_text(shown):
+                        return True
+                if attempt < 2:
+                    shown = selected_prop_value(page, prop_id)
+                    if shown and _compact_text(shown) == _compact_text(requested):
+                        return True
+            # A normal enum search input only filters its dropdown. Direct text
+            # does not commit a selected value to the seller form.
+            if prop_type == "select" and "直接输入" not in placeholder:
+                return False
+            # Customizable fields accept direct text; blur commits the value.
+            _set_input_value(inp, requested)
+            try:
+                page.ele("css:#guid-title input", timeout=2).click()
+            except Exception:
+                pass
+            return _compact_text(selected_prop_value(page, prop_id)) == _compact_text(requested)
+        except Exception as exc:
+            if type(exc).__name__ not in {"NoRectError", "ElementLostError", "ContextLostError"} or refresh >= 2:
+                raise
+            time.sleep(.35)
+    return False
 
 
 def add_sale_values(page: ChromiumPage, placeholder: str, values: list[str]) -> int:
@@ -1570,11 +1872,13 @@ def add_sale_dimensions(page: ChromiumPage, model: dict[str, Any]) -> dict[str, 
                 time.sleep(.6)
                 accepted += 1
         results.append({"name": dimension.get("name"), "requested": values, "accepted": accepted})
+    accepted_values = sum(int(item["accepted"]) for item in results)
+    requested_values = sum(len(item["requested"]) for item in results)
     return {
-        "status": "filled",
+        "status": "filled" if accepted_values == requested_values else "partial",
         "dimensions": results,
         "slots": slots,
-        "accepted_values": sum(int(item["accepted"]) for item in results),
+        "accepted_values": accepted_values,
     }
 
 
@@ -1588,7 +1892,14 @@ def sale_property_placeholder(page: ChromiumPage) -> str:
 
 def source_property_map(page: ChromiumPage, source_attrs: dict[str, Any]) -> dict[str, str]:
     """Match collected attributes to the current category's visible property IDs."""
-    normalized = {_compact_text(key): str(value) for key, value in source_attrs.items() if value not in (None, "")}
+    def canonical_label(value: Any) -> str:
+        return _compact_text(value).replace("玩具材质", "材质")
+
+    normalized = {
+        canonical_label(key): str(value)
+        for key, value in source_attrs.items()
+        if value not in (None, "")
+    }
     visible = list(page.run_js(
         """
         return Array.from(document.querySelectorAll('[cat-prop-id]')).map(box => ({
@@ -1598,9 +1909,9 @@ def source_property_map(page: ChromiumPage, source_attrs: dict[str, Any]) -> dic
         """
     ) or [])
     return {
-        str(item.get('id')): normalized[_compact_text(item.get('label'))]
+        str(item.get('id')): normalized[canonical_label(item.get('label'))]
         for item in visible
-        if item.get('id') and _compact_text(item.get('label')) in normalized
+        if item.get('id') and canonical_label(item.get('label')) in normalized
     }
 
 
@@ -1655,11 +1966,45 @@ def discover_sku_table(page: ChromiumPage) -> dict[str, Any]:
 
 
 def _set_input_value(input_element: Any, value: Any) -> None:
-    input_element.input(str(value), clear=True)
+    text = str(value)
     try:
-        input_element.run_js("this.dispatchEvent(new Event('change', {bubbles:true}));")
+        previous = str(input_element.attr("value") or "")
     except Exception:
-        pass
+        previous = ""
+    input_element.input(text, clear=True)
+    try:
+        # Ant/React controls keep their value in component state.  Setting the
+        # DOM value alone (or dispatching only change) leaves that state empty,
+        # which later causes a false "required" validation error.
+        input_element.run_js(
+            """
+            const next = arguments[0];
+            const previous = arguments[1];
+            const prototype = Object.getPrototypeOf(this);
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value') ||
+              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+            if (descriptor?.set) descriptor.set.call(this, next);
+            else this.value = next;
+            // React compares the DOM value with its private value tracker.
+            // Reset that tracker so the synthetic input event is observed even
+            // when DrissionPage already changed the visible DOM value.
+            const tracker = this._valueTracker;
+            if (tracker) tracker.setValue(previous);
+            this.dispatchEvent(new Event('input', {bubbles: true}));
+            this.dispatchEvent(new Event('change', {bubbles: true}));
+            this.dispatchEvent(new Event('blur', {bubbles: true}));
+            return this.value;
+            """,
+            text,
+            previous,
+        )
+    except Exception:
+        try:
+            input_element.run_js(
+                "this.dispatchEvent(new Event('input', {bubbles:true})); this.dispatchEvent(new Event('change', {bubbles:true})); this.dispatchEvent(new Event('blur', {bubbles:true}));"
+            )
+        except Exception:
+            pass
 
 
 def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
@@ -1688,11 +2033,90 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
             const label = (cell.querySelector('[class*="sku"], [class*="spec"]')?.innerText || '').trim();
             if (label) values[label] = label;
           });
-           const codeInput = inputs.find(item => /单品货号|货号|商家编码|编码|sku/i.test([item.name, item.placeholder, item.header].join(' ')));
-           return {text: (row.innerText || '').trim(), inputs, sku_id: codeInput?.value || '', properties: values, headers};
+           const codeInput = inputs.find(item => {
+             const hint = [item.name, item.placeholder, item.header].join(' ');
+             return /单品货号|商家编码|货号/.test(hint) && !/SKU分类/i.test(hint);
+           });
+           const identityInput = Array.from(row.querySelectorAll('input[type="hidden"], [data-sku-id], [data-skuid]'))
+             .find(input => /sku[_-]?id|spec[_-]?id/i.test([
+               input.name, input.id, input.getAttribute('data-field'), input.getAttribute('data-sku-id'), input.getAttribute('data-skuid')
+             ].join(' ')));
+           const targetSkuId = row.getAttribute('data-sku-id') || row.getAttribute('data-skuid') || identityInput?.value || '';
+           return {
+             text: (row.innerText || '').trim(), inputs, sku_id: targetSkuId,
+             sku_identity_available: Boolean(targetSkuId), merchant_code: codeInput?.value || '',
+             properties: values, headers
+           };
         });
         """
     ) or [])
+
+
+def match_sku_rows_by_specification(
+    skus: list[dict[str, Any]], rendered_rows: list[dict[str, Any]]
+) -> list[int] | None:
+    """Return source-to-target indexes when specifications match uniquely."""
+    if not skus or len(skus) != len(rendered_rows):
+        return None
+
+    def matches(sku: dict[str, Any], rendered: dict[str, Any]) -> bool:
+        props = sku.get("properties") or sku.get("specProps") or {}
+        values = list(props.values()) if isinstance(props, dict) and props else [
+            sku.get("name") or sku.get("sku_name") or ""
+        ]
+        rendered_props = rendered.get("properties") or {}
+        rendered_values = (
+            [str(value) for value in rendered_props.values()]
+            if isinstance(rendered_props, dict) else []
+        )
+        evidence = " ".join([str(rendered.get("text") or ""), *rendered_values])
+        compact_evidence = _compact_text(evidence)
+        normalized_values = [_compact_text(clean_sku_value(value)) for value in values]
+        if not normalized_values:
+            return False
+        rendered_set = {_compact_text(clean_sku_value(value)) for value in rendered_values}
+        if rendered_set and all(value in rendered_set for value in normalized_values):
+            return True
+        evidence_parts = {
+            _compact_text(part)
+            for part in re.split(r"[,，、|]", evidence)
+            if part.strip()
+        }
+        return all(value and value in evidence_parts for value in normalized_values)
+
+    candidates = [
+        [target_index for target_index, rendered in enumerate(rendered_rows) if matches(sku, rendered)]
+        for sku in skus
+    ]
+    result = [items[0] if len(items) == 1 else None for items in candidates]
+    if any(item is None for item in result) or len(set(result)) != len(skus):
+        return None
+    return [int(item) for item in result]
+
+
+def rendered_sku_properties(
+    rendered_rows: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+    dimensions: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Resolve rendered specifications without assuming target row order."""
+    mapping = match_sku_rows_by_specification(source_rows, rendered_rows)
+    target_to_source = (
+        {target_index: source_index for source_index, target_index in enumerate(mapping)}
+        if mapping is not None else {}
+    )
+    result: list[dict[str, str]] = []
+    for target_index, _rendered in enumerate(rendered_rows):
+        source_index = target_to_source.get(target_index)
+        source = source_rows[source_index] if source_index is not None else {}
+        source_props = source.get("properties") or {}
+        result.append({
+            str(dimension.get("name") or ""): str(
+                source_props.get(str(dimension.get("name") or "")) or ""
+            )
+            for dimension in dimensions
+        })
+    return result
 
 
 def fill_sku_rows(page: ChromiumPage, skus: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1701,21 +2125,38 @@ def fill_sku_rows(page: ChromiumPage, skus: list[dict[str, Any]]) -> dict[str, A
     selected = table.get("selected") or {}
     rows = page.eles('css:table[data-codex-sku-table="1"] tbody tr') if int(selected.get("row_count") or 0) else []
     count = min(len(rows), len(skus))
-    for row, sku in zip(rows, skus):
-        inputs = row.eles("tag:input")
-        if not inputs:
-            continue
-        def input_hint(item: Any) -> str:
-            return " ".join(
-                str(item.attr(key) or "")
-                for key in ("name", "placeholder", "data-codex-field")
-            )
+    rendered_before = read_sku_table_rows(page)
 
-        price_input = next((item for item in inputs if re.search(r"price|价格|售价", input_hint(item), re.I)), None)
+    # 1688 may sort a generated matrix by its own property order. Match rows
+    # by the visible specification combination before falling back to index.
+    row_indices = match_sku_rows_by_specification(skus[:count], rendered_before[:count])
+    mapping_reliable = row_indices is not None
+    if not mapping_reliable and count == 1:
+        row_indices = list(range(count))
+    elif not mapping_reliable:
+        return {
+            "count": 0,
+            "table": table,
+            "rendered": rendered_before,
+            "mapping": "ambiguous",
+            "mapping_reliable": False,
+            "reason": "target_sku_rows_could_not_be_matched_by_specification",
+        }
+    def input_hint(item: Any) -> str:
+        return " ".join(
+            str(item.attr(key) or "")
+            for key in ("name", "placeholder", "data-codex-field")
+        )
+
+    def find_fields(row: Any) -> tuple[Any, Any, Any]:
+        inputs = row.eles('css:input:not([type="hidden"])')
+        if not inputs:
+            return None, None, None
+        price_input = next((item for item in inputs if _is_sku_price_hint(input_hint(item))), None)
         stock_input = next((item for item in inputs if re.search(r"可售数量|库存|stock", input_hint(item), re.I)), None)
         if stock_input is None:
             stock_input = next((item for item in inputs if re.search(r"数量", input_hint(item), re.I)), None)
-        code_input = next((item for item in inputs if re.search(r"单品货号|货号|商家编码|编码|sku", input_hint(item), re.I)), None)
+        code_input = next((item for item in inputs if _is_sku_code_hint(input_hint(item))), None)
         # Only unnamed legacy matrices get positional price/stock fallback.
         # The current seller matrix has stock + cargo-number inputs, so its
         # first input must never be mistaken for a price field.
@@ -1724,15 +2165,150 @@ def fill_sku_rows(page: ChromiumPage, skus: list[dict[str, Any]]) -> dict[str, A
             stock_input = inputs[1]
         if stock_input is None and code_input is not None:
             stock_input = next((item for item in inputs if item is not code_input), None)
-        if price_input is not None:
-            _set_input_value(price_input, sku.get("price", 0))
-        if stock_input is not None:
-            _set_input_value(stock_input, sku.get("stock", 0))
-        if code_input is not None:
-            _set_input_value(code_input, sku.get("sku_id", ""))
+        return price_input, stock_input, code_input
+
+    for index, sku in enumerate(skus[:count]):
+        row_index = int(row_indices[index])
+        # Most value commits do not replace the table. Reuse the discovered row
+        # and pay for a fresh DOM lookup only if React invalidated that element.
+        try:
+            price_input, stock_input, code_input = find_fields(rows[row_index])
+            if price_input is not None and sku.get("price") not in (None, ""):
+                _set_input_value(price_input, sku.get("price", 0))
+            if stock_input is not None:
+                _set_input_value(stock_input, sku.get("stock", 0))
+            if code_input is not None:
+                _set_input_value(code_input, sku.get("sku_id", ""))
+        except Exception as exc:
+            if type(exc).__name__ not in {"ElementLostError", "ContextLostError", "NoRectError"}:
+                raise
+            current_rows = page.eles('css:table[data-codex-sku-table="1"] tbody tr')
+            if row_index >= len(current_rows):
+                continue
+            price_input, stock_input, code_input = find_fields(current_rows[row_index])
+            if price_input is not None and sku.get("price") not in (None, ""):
+                _set_input_value(price_input, sku.get("price", 0))
+            if stock_input is not None:
+                _set_input_value(stock_input, sku.get("stock", 0))
+            if code_input is not None:
+                _set_input_value(code_input, sku.get("sku_id", ""))
     time.sleep(1)
     rendered = read_sku_table_rows(page)
-    return {"count": count, "table": table, "rendered": rendered}
+    # A redraw can occasionally drop the last controlled-input event. Retry
+    # only rows whose values did not make it into the rendered table.
+    for index, sku in enumerate(skus[:count]):
+        row_index = int(row_indices[index])
+        if row_index >= len(rendered):
+            continue
+        current = rendered[row_index]
+        values = current.get("inputs") or []
+        price_ok = any(_is_sku_price_hint(str(item.get("header") or ""))
+                       and same_number(item.get("value"), sku.get("price")) for item in values)
+        code_ok = any(re.search(r"单品货号|商家编码|货号", str(item.get("header") or ""), re.I)
+                      and str(item.get("value") or "") == str(sku.get("sku_id") or "") for item in values)
+        if price_ok and code_ok:
+            continue
+        current_rows = page.eles('css:table[data-codex-sku-table="1"] tbody tr')
+        if row_index >= len(current_rows):
+            continue
+        price_input, _stock_input, code_input = find_fields(current_rows[row_index])
+        if not price_ok and price_input is not None and sku.get("price") not in (None, ""):
+            _set_input_value(price_input, sku.get("price", 0))
+        if not code_ok and code_input is not None:
+            _set_input_value(code_input, sku.get("sku_id", ""))
+    if count:
+        time.sleep(.4)
+        rendered = read_sku_table_rows(page)
+    return {
+        "count": count,
+        "table": table,
+        "rendered": rendered,
+        "mapping": "specification" if mapping_reliable else "single_row",
+        "mapping_reliable": mapping_reliable,
+    }
+
+
+def fill_quotation_type(
+    page: ChromiumPage, sku_prices: list[Any], minimum_order: Any = 1
+) -> dict[str, Any]:
+    """Select SKU-level quotation when source SKU prices are not uniform."""
+    numeric_prices = []
+    for value in sku_prices:
+        try:
+            numeric = Decimal(str(value).strip())
+        except (InvalidOperation, ValueError):
+            continue
+        if numeric.is_finite():
+            numeric_prices.append(numeric)
+    distinct = {value for value in numeric_prices}
+    required = len(distinct) > 1
+    result: dict[str, Any] = {
+        "required": required,
+        "mode": "sku" if required else "quantity",
+        "distinct_prices": len(distinct),
+        "status": "skipped" if not required else "missing",
+    }
+    if not required:
+        return result
+    selected = bool(page.run_js(
+        """
+        const box = document.querySelector('#guid-quotationType');
+        const input = box?.querySelector('input[type="radio"][value="1"]');
+        if (!input) return false;
+        input.click();
+        return true;
+        """
+    ))
+    if selected:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            selected = bool(page.run_js(
+                "return Boolean(document.querySelector('#guid-quotationType input[type=\"radio\"][value=\"1\"]:checked'));"
+            ))
+            if selected:
+                break
+            time.sleep(.25)
+    result["status"] = "selected" if selected else "missing"
+    match = re.search(r"\d+", str(minimum_order or ""))
+    minimum = int(match.group(0)) if match and int(match.group(0)) > 0 else 1
+    result["minimum_order"] = minimum
+    if selected:
+        # Switching quotation mode remounts this Ant InputNumber. Reacquire the
+        # settled control before committing the source minimum order.
+        time.sleep(.5)
+        begin_amount = page.ele("css:#guid-beginAmount input", timeout=3)
+        if begin_amount:
+            _set_input_value(begin_amount, minimum)
+            try:
+                page.ele("css:#guid-title input", timeout=1).click()
+            except Exception:
+                pass
+            time.sleep(.5)
+            state = dict(page.run_js(
+                """
+                const module = document.querySelector('#guid-beginAmount');
+                const input = module?.querySelector('input');
+                const localError = Boolean(module?.querySelector(
+                  '.ant-form-item-has-error, .ant-input-number-status-error, .next-error, .modern-message'
+                ));
+                return {
+                  value: input?.value || '',
+                  ariaValue: input?.getAttribute('aria-valuenow') || '',
+                  invalid: input?.getAttribute('aria-invalid') === 'true',
+                  localError
+                };
+                """
+            ) or {})
+            result["minimum_order_state"] = state
+            result["minimum_order_filled"] = (
+                same_number(state.get("value"), minimum)
+                and (not state.get("ariaValue") or same_number(state.get("ariaValue"), minimum))
+                and not state.get("invalid")
+                and not state.get("localError")
+            )
+        else:
+            result["minimum_order_filled"] = False
+    return result
 
 
 def fill_number_inputs(page: ChromiumPage, module_id: str, values: list[str]) -> int:
@@ -1819,6 +2395,41 @@ def same_number(left: Any, right: Any) -> bool:
         return False
 
 
+def _page_validation_errors(
+    state: dict[str, Any] | None, *, allow_deferred_delivery: bool = False
+) -> list[str]:
+    deferred = re.compile(r"发货时间|发货承诺") if allow_deferred_delivery else None
+    return [
+        str(item) for item in (state or {}).get("errors") or []
+        if re.search(r"(?:^|\s)\d+\s*错误|错误\s*\(\d+\)|不能为空|请(?:选择|填写|上传)", str(item))
+        and not (deferred and deferred.search(str(item)))
+    ]
+
+
+def preview_result(
+    sku_model: dict[str, Any], fields: dict[str, Any], state: dict[str, Any] | None
+) -> str:
+    """Classify a preview from verified page state, not process completion."""
+    sku_valid = (
+        not sku_model.get("source_count")
+        or (
+            sku_model.get("valid", True)
+            and fields.get("sku_dimensions", {}).get("status") == "filled"
+            and fields.get("sku_validation", {}).get("valid")
+        )
+    )
+    quotation = fields.get("quotation_type") or {}
+    quotation_valid = (
+        not quotation.get("required")
+        or (quotation.get("status") == "selected" and quotation.get("minimum_order_filled", False))
+    )
+    if not sku_valid or not quotation_valid or _page_validation_errors(state, allow_deferred_delivery=True):
+        return "preview_invalid"
+    if fields.get("package_dimensions", {}).get("status") not in {"filled", "skipped"}:
+        return "preview_partial"
+    return "preview_filled"
+
+
 def inspect_state(page: ChromiumPage) -> dict[str, Any]:
     body = page.ele("tag:body")
     body_text = (body.text or "") if body else ""
@@ -1838,10 +2449,29 @@ def inspect_state(page: ChromiumPage) -> dict[str, Any]:
             "return document.querySelectorAll('#guid-primaryPicture .module-picture-cover-wrapper:not(.cover-empty)').length;"
         ) or 0),
         "price_range_preview": read_price_range_preview(page),
-        "errors": [
-            line.strip() for line in body_text.splitlines()
-            if any(marker in line for marker in ("错误", "不能为空", "请填写", "请选择", "请上传"))
-        ][:20],
+        "quotation_type_value": str(page.run_js(
+            """
+            const checked = document.querySelector('#guid-quotationType input[type="radio"]:checked');
+            return checked?.value || '';
+            """
+        ) or "").strip(),
+        # Read validation nodes instead of scanning all body text. The page
+        # contains many optional-module instructions such as "请选择加图加字"
+        # that are not validation failures.
+        "errors": list(page.run_js(
+            """
+            const selectors = [
+              '.prop-error-message', '.ant-form-item-explain-error',
+              '.next-form-item-help', '.modern-message'
+            ];
+            return Array.from(document.querySelectorAll(selectors.join(',')))
+              .filter(node => node.offsetParent !== null)
+              .map(node => (node.innerText || node.textContent || '').trim())
+              .filter(Boolean)
+              .filter((value, index, values) => values.indexOf(value) === index)
+              .slice(0, 30);
+            """
+        ) or []),
         "delivery_time_value": str(page.run_js(
             """
             const row = Array.from(document.querySelectorAll('#guid-buyerProtection tbody tr'))
@@ -1861,8 +2491,14 @@ def inspect_state(page: ChromiumPage) -> dict[str, Any]:
         "package_weight_values": list(page.run_js(
             """
             return Array.from(document.querySelectorAll('#guid-officialLogistics tbody tr'))
-              .map(row => Array.from(row.querySelectorAll('input')).map(input => input.value || ''))
-              .filter(values => values.length);
+              .map(row => {
+                const inputs = Array.from(row.querySelectorAll('input:not([type="hidden"])'));
+                const weight = inputs.find(input => /重量|weight/i.test([
+                  input.name, input.placeholder, input.getAttribute('data-field')
+                ].join(' '))) || inputs[3];
+                return weight?.value || '';
+              })
+              .filter(Boolean);
             """
         ) or []),
         "description_textarea_length": int(page.run_js(
@@ -2041,6 +2677,8 @@ def main(argv: list[str] | None = None) -> int:
                 report["result"] = (
                     "seller_login_timeout"
                     if login_status == "login_timeout"
+                    else "seller_navigation_failed"
+                    if str(login_status).startswith("navigation_error:")
                     else "seller_browser_closed_during_login"
                 )
                 report["login_wait"] = {
@@ -2085,6 +2723,8 @@ def main(argv: list[str] | None = None) -> int:
             report["result"] = (
                 "seller_login_timeout"
                 if login_status == "login_timeout"
+                else "seller_navigation_failed"
+                if str(login_status).startswith("navigation_error:")
                 else "seller_browser_closed_during_login"
             )
             report["login_wait"] = {
@@ -2132,11 +2772,15 @@ def main(argv: list[str] | None = None) -> int:
         required_defaults = dict(category_rules.get("labels") or {})
         defaulted_attributes: list[dict[str, str]] = []
         category_props = list(page.run_js(
-            """
+            r"""
             return Array.from(document.querySelectorAll('[cat-prop-id]')).map(box => ({
               id: box.getAttribute('cat-prop-id') || '',
               label: (box.querySelector('.cat-prop-label')?.innerText || '').replace('*', '').trim(),
-              required: Boolean(box.querySelector('.cat-prop-label em'))
+              required: Boolean(
+                box.querySelector('.cat-prop-label em, [aria-required="true"]') ||
+                box.getAttribute('aria-required') === 'true' ||
+                /\*/.test(box.querySelector('.cat-prop-label')?.innerText || '')
+              )
             }));
             """
         ) or [])
@@ -2149,14 +2793,24 @@ def main(argv: list[str] | None = None) -> int:
         for item in category_props:
             label = str(item.get("label") or "").strip()
             prop_id = str(item.get("id") or "").strip()
-            if prop_id and prop_id not in prop_map and label in required_defaults:
-                value = required_defaults[label]
+            if prop_id and prop_id not in prop_map:
+                value = required_defaults.get(label)
+                default_source = "configured"
+                if value in (None, ""):
+                    value = safe_required_attribute_default(label, prop_id)
+                    default_source = "seller_form_safe_default"
+                if value in (None, ""):
+                    continue
                 prop_map[prop_id] = value
                 defaulted_attributes.append({
                     "property_id": prop_id,
                     "label": label,
                     "value": value,
-                    "reason": "源商品未采集到该必填属性，使用目标类目有效默认选项",
+                    "reason": (
+                        "源商品未采集到该必填属性，使用类目规则配置的默认选项"
+                        if default_source == "configured"
+                        else "源商品未采集到该必填属性，使用卖家页面明确说明的安全默认选项"
+                    ),
                 })
         prop_map.update({str(key): str(value) for key, value in (category_rules.get("properties") or {}).items()})
         report["fields"]["attributes"] = {}
@@ -2165,7 +2819,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 filled = fill_prop(page, pid, value)
                 displayed = selected_prop_value(page, pid)
-                confirmed = bool(displayed) and displayed not in {"请选择", "如无合适选项可直接输入填写（可多选）"}
+                requested_parts = _requested_property_parts(value)
+                confirmed = _property_values_match(displayed, requested_parts)
                 report["fields"]["attributes"][pid] = {
                     "attempted": filled,
                     "displayed": displayed,
@@ -2213,6 +2868,18 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["sku_dimensions"] = add_sale_dimensions(page, sku_model)
         time.sleep(2)
         normalized_sku_rows = list(sku_model.get("rows") or [])
+        report["fields"]["quotation_type"] = fill_quotation_type(
+            page,
+            [item.get("price") for item in normalized_sku_rows],
+            (product.get("price") or {}).get("min_order"),
+        )
+        if (
+            report["fields"]["quotation_type"].get("required")
+            and report["fields"]["quotation_type"].get("status") != "selected"
+        ):
+            report.setdefault("warnings", []).append(
+                "检测到多个 SKU 价格，但未能切换为按产品规格报价"
+            )
         sku_result = fill_sku_rows(page, normalized_sku_rows) if sku_model.get("source_count") else {
             "count": 0,
             "table": {"selected": {"row_count": 0}},
@@ -2222,6 +2889,7 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["sku_table"] = sku_result.get("table")
         report["fields"]["sku_rendered_rows"] = sku_result.get("rendered")
         report["fields"]["sku_value_mapping"] = {
+            "价格": "source skus[].price (多价格时按产品规格报价)",
             "可售数量": "source skus[].stock",
             "单品货号": "source skus[].sku_id",
             "说明": "源商品未提供独立商家货号时，使用1688 SKU ID作为草稿货号",
@@ -2231,29 +2899,25 @@ def main(argv: list[str] | None = None) -> int:
         # its sole source dimension and rely on the strict row/value checks.
         rendered_for_validation = []
         dimensions = list(sku_model.get("dimensions") or [])
+        target_properties = rendered_sku_properties(
+            list(sku_result.get("rendered") or []), normalized_sku_rows, dimensions
+        )
         for index, rendered in enumerate(sku_result.get("rendered") or []):
-            source = normalized_sku_rows[index] if index < len(normalized_sku_rows) else {}
-            row_text = str(rendered.get("text") or "")
-            source_props = dict(source.get("properties") or {})
-            # Treat the rendered row as evidence. A source value is accepted
-            # only when it is visibly present in that row; otherwise the target
-            # property is marked missing and the save gate will stop the run.
-            props = {
-                str(dimension.get("name")): (
-                    str(source_props.get(str(dimension.get("name"))) or "")
-                    if str(source_props.get(str(dimension.get("name"))) or "") in row_text
-                    else ""
-                )
-                for dimension in dimensions
-            }
+            props = target_properties[index] if index < len(target_properties) else {}
             inputs = rendered.get("inputs") or []
             values = {
                 " ".join(str(item.get(key) or "") for key in ("name", "placeholder", "header")): str(item.get("value") or "")
                 for item in inputs
             }
-            price_value = next((value for key, value in values.items() if re.search(r"price|价格|售价", key, re.I)), "")
-            stock_value = next((value for key, value in values.items() if re.search(r"stock|库存|数量", key, re.I)), "")
-            rendered_for_validation.append({"properties": props, "price": price_value, "stock": stock_value, "sku_id": rendered.get("sku_id") or ""})
+            price_value = next((value for key, value in values.items() if _is_sku_price_hint(key)), "")
+            stock_value = next((value for key, value in values.items() if SKU_STOCK_HINT.search(key)), "")
+            rendered_for_validation.append({
+                "properties": props,
+                "price": price_value,
+                "stock": stock_value,
+                "sku_id": rendered.get("sku_id") or "",
+                "sku_identity_available": bool(rendered.get("sku_identity_available")),
+            })
         report["fields"]["sku_validation"] = validate_target_rows(sku_model, rendered_for_validation)
         if sku_model.get("source_count") and (
             report["fields"]["sku_dimensions"].get("status") != "filled"
@@ -2264,8 +2928,13 @@ def main(argv: list[str] | None = None) -> int:
             report.setdefault("warnings", []).append(
                 str(report["fields"]["sku_dimensions"].get("reason") or "销售属性或 SKU 表未完整生成")
             )
-        report["fields"]["price_range"] = fill_price_range(
-            page, "1", str(product.get("price", {}).get("primary", 0))
+        quotation_type = report["fields"].get("quotation_type") or {}
+        sku_quotation = bool(quotation_type.get("required"))
+        report["fields"]["price_range"] = (
+            {"status": "skipped", "reason": "sku_quotation"}
+            if sku_quotation else fill_price_range(
+                page, "1", str(product.get("price", {}).get("primary", 0))
+            )
         )
         report["fields"]["total_sales"] = fill_number_inputs(
             page, "guid-totalSales", [str(product.get("stock", {}).get("total_observed", 0))]
@@ -2276,13 +2945,13 @@ def main(argv: list[str] | None = None) -> int:
         page_price = str(report["fields"]["price_range_values"].get("price") or "").strip()
         if not page_price:
             page_price = displayed_price(report["fields"]["price_range_preview"])
-        if page_price and rendered_for_validation:
+        if page_price and rendered_for_validation and not sku_quotation:
             for row in rendered_for_validation:
                 if not row.get("price"):
                     row["price"] = page_price
             report["fields"]["sku_validation"] = validate_target_rows(sku_model, rendered_for_validation)
         expected_price = str(product.get("price", {}).get("primary", 0))
-        if not same_number(page_price, expected_price):
+        if not sku_quotation and not same_number(page_price, expected_price):
             report.setdefault("warnings", []).append(
                 f"区间报价回显异常，期望单价 {expected_price}，实际 {page_price or report['fields']['price_range_preview']}"
             )
@@ -2310,13 +2979,12 @@ def main(argv: list[str] | None = None) -> int:
             fill_freight_template(page, args.freight_template_text)
             if args.freight_template_text else {"status": "skipped", "reason": "not_configured"}
         )
-        report["fields"]["package_dimensions"] = (
-            fill_default_package_weight(page, args.package_weight_grams)
-            if args.package_weight_grams is not None else {"status": "skipped", "reason": "not_configured"}
+        report["fields"]["package_dimensions"] = fill_package_weights(
+            page, product.get("package_weights"),
+            default_weight_grams=args.package_weight_grams,
         )
-        if (args.package_weight_grams is not None
-                and report["fields"]["package_dimensions"]["status"] != "filled"):
-            report.setdefault("warnings", []).append("件重尺默认重量未能写入规格行")
+        if report["fields"]["package_dimensions"]["status"] not in {"filled", "skipped"}:
+            report.setdefault("warnings", []).append("件重无法可靠映射到目标规格行")
 
         source_detail_paths = detail_asset_paths
         detail_paths, prepared_detail_meta, rejected_detail_images = prepare_detail_images(
@@ -2369,6 +3037,22 @@ def main(argv: list[str] | None = None) -> int:
         report["state_before_save"] = inspect_state(page)
 
         if args.save_draft:
+            delivery_control_required = bool(page.run_js(
+                """
+                const row = document.querySelector('#guid-buyerProtection tbody tr');
+                return Boolean(row && row.querySelector('.ant-select') &&
+                  /发货时间|发货承诺/.test(row.innerText || ''));
+                """
+            ))
+            if delivery_control_required and not args.delivery_promise:
+                report["fields"]["delivery_time"] = {
+                    "status": "missing_configuration",
+                    "required_by_page": True,
+                    "displayed": str(report["fields"].get("delivery_time") or ""),
+                }
+                report.setdefault("warnings", []).append(
+                    "店铺页面要求发货时间，但运行参数未配置 delivery_promise"
+                )
             unconfirmed_attributes = [
                 prop_id for prop_id, value in (report["fields"].get("attributes") or {}).items()
                 if prop_id in required_prop_ids
@@ -2389,8 +3073,11 @@ def main(argv: list[str] | None = None) -> int:
                 or report["fields"].get("freight_template", {}).get("status") == "selected",
                 not args.delivery_promise
                 or _compact_text(args.delivery_promise) in _compact_text(report["fields"].get("delivery_time")),
-                args.package_weight_grams is None
-                or report["fields"].get("package_dimensions", {}).get("status") == "filled",
+                report["fields"].get("package_dimensions", {}).get("status") in {"filled", "skipped"},
+                not (report["fields"].get("quotation_type") or {}).get("required")
+                or (report["fields"].get("quotation_type") or {}).get("status") == "selected",
+                not (report["fields"].get("quotation_type") or {}).get("required")
+                or (report["fields"].get("quotation_type") or {}).get("minimum_order_filled", False),
             ))
             if not runtime_configuration_ok:
                 report["result"] = "blocked_runtime_store_configuration"
@@ -2398,10 +3085,9 @@ def main(argv: list[str] | None = None) -> int:
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
-            state_errors = [
-                item for item in (report.get("state_before_save") or {}).get("errors") or []
-                if re.search(r"(?:^|\s)\d+\s*错误|错误\s*\(\d+\)|不能为空|请(?:选择|填写|上传)", item)
-            ]
+            state_errors = _page_validation_errors(
+                report.get("state_before_save"), allow_deferred_delivery=True
+            )
             if state_errors:
                 report["result"] = "blocked_page_validation_errors"
                 report.setdefault("warnings", []).append("发布页仍显示校验错误，已阻止保存草稿")
@@ -2475,15 +3161,13 @@ def main(argv: list[str] | None = None) -> int:
             draft_url = str(page.url)
             report["draft_url"] = draft_url if "draftId=" in draft_url else None
             try:
-                page.get(DRAFT_INDEX_URL)
-            except Exception:
-                try:
-                    report["navigation_alert_text"] = page.handle_alert(
-                        accept=True, timeout=2
-                    )
-                except Exception:
-                    report["navigation_alert_text"] = None
-                page.get(DRAFT_INDEX_URL)
+                report["navigation_alert_text"] = navigate_with_alert_recovery(page, DRAFT_INDEX_URL)
+            except Exception as exc:
+                report["navigation_error"] = {"reason": type(exc).__name__, "message": str(exc)}
+                report["result"] = "draft_saved_navigation_failed"
+                save_artifacts(page, args.output_dir, report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 3
             time.sleep(8)
             body = page.ele("tag:body")
             draft_text = (body.text or "") if body else ""
@@ -2496,7 +3180,7 @@ def main(argv: list[str] | None = None) -> int:
             if not new_matching:
                 # Draft indexing can lag the save response by a few seconds.
                 time.sleep(5)
-                page.get(DRAFT_INDEX_URL)
+                navigate_with_alert_recovery(page, DRAFT_INDEX_URL)
                 time.sleep(6)
                 report["draft_records_after_retry"] = draft_records(page)
                 report["draft_records_after"] = report["draft_records_after_retry"]
@@ -2518,7 +3202,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             report["description_reopen_verified"] = False
             if report["draft_url"]:
-                page.get(report["draft_url"])
+                navigate_with_alert_recovery(page, report["draft_url"])
                 # Draft form hydrates logistics controls after the main React
                 # tree; allow that second request to finish before checking.
                 time.sleep(20)
@@ -2544,15 +3228,11 @@ def main(argv: list[str] | None = None) -> int:
                 if not reopened_page_price:
                     reopened_page_price = displayed_price(report["state_after_reopen"].get("price_range_preview"))
                 dimensions = list(sku_model.get("dimensions") or [])
+                target_properties = rendered_sku_properties(
+                    reopened_rows, normalized_sku_rows, dimensions
+                )
                 for index, rendered in enumerate(reopened_rows):
-                    source = normalized_sku_rows[index] if index < len(normalized_sku_rows) else {}
-                    row_text = str(rendered.get("text") or "")
-                    props = {
-                        str(dimension.get("name")): (
-                            str((source.get("properties") or {}).get(str(dimension.get("name"))) or "")
-                            if str((source.get("properties") or {}).get(str(dimension.get("name"))) or "") in row_text else ""
-                        ) for dimension in dimensions
-                    }
+                    props = target_properties[index] if index < len(target_properties) else {}
                     inputs = rendered.get("inputs") or []
                     values = {
                         " ".join(str(item.get(key) or "") for key in ("name", "placeholder", "header")): str(item.get("value") or "")
@@ -2560,9 +3240,10 @@ def main(argv: list[str] | None = None) -> int:
                     }
                     reopened_for_validation.append({
                         "properties": props,
-                        "price": next((v for k, v in values.items() if re.search(r"price|价格|售价", k, re.I)), reopened_page_price),
+                        "price": next((v for k, v in values.items() if _is_sku_price_hint(k)), reopened_page_price),
                         "stock": next((v for k, v in values.items() if re.search(r"stock|库存|数量", k, re.I)), ""),
                         "sku_id": rendered.get("sku_id") or "",
+                        "sku_identity_available": bool(rendered.get("sku_identity_available")),
                     })
                 report["sku_reopen_validation"] = validate_target_rows(sku_model, reopened_for_validation)
                 initial_attributes = report["fields"].get("attributes") or {}
@@ -2570,7 +3251,6 @@ def main(argv: list[str] | None = None) -> int:
                     prop_id: selected_prop_value(page, prop_id) for prop_id in initial_attributes
                 }
             reopened = report.get("state_after_reopen") or {}
-            expected_skus = len(product.get("skus") or [])
             weights = reopened.get("package_weight_values") or []
             report["field_reopen_checks"] = {
                 "draft_identity": bool(report.get("draft_identity_verified")),
@@ -2579,13 +3259,25 @@ def main(argv: list[str] | None = None) -> int:
                 "category": reopened.get("category_id_value") == category_id or f"catId={category_id}" in str(reopened.get("url") or ""),
                 "main_images": int(reopened.get("main_image_count") or 0) >= int(report["fields"].get("main_images_expected") or 0),
                 "sku_values": bool((report.get("sku_reopen_validation") or {}).get("valid")),
-                "price": same_number(displayed_price(reopened.get("price_range_preview")), expected_price),
+                "price": (
+                    bool((report.get("sku_reopen_validation") or {}).get("valid"))
+                    if bool((report.get("fields", {}).get("quotation_type") or {}).get("required"))
+                    else same_number(displayed_price(reopened.get("price_range_preview")), expected_price)
+                ),
+                "quotation_type": (
+                    reopened.get("quotation_type_value") == "1"
+                    if bool((report.get("fields", {}).get("quotation_type") or {}).get("required"))
+                    else True
+                ),
                 "attributes": all(
                     bool(item.get("displayed")) and report.get("attributes_after_reopen", {}).get(prop_id) == item.get("displayed")
                     for prop_id, item in (report["fields"].get("attributes") or {}).items() if isinstance(item, dict)
                 ),
                 "publish_not_clicked": not read_publish_guard_events(page),
             }
+            expected_weights = list(
+                (report["fields"].get("package_dimensions") or {}).get("expected_weights") or []
+            )
             optional_reopen_checks = {
                 "shipping_address": (
                     not args.shipping_address
@@ -2600,9 +3292,10 @@ def main(argv: list[str] | None = None) -> int:
                     or _compact_text(args.freight_template_text) in _compact_text(reopened.get("freight_template_value"))
                 ),
                 "package_weights": (
-                    args.package_weight_grams is None
-                    or (len(weights) == expected_skus and all(
-                        len(row) >= 4 and str(row[3]) == str(args.package_weight_grams) for row in weights
+                    not expected_weights
+                    or (len(weights) == len(expected_weights) and all(
+                        same_number(value, expected_weights[index])
+                        for index, value in enumerate(weights)
                     ))
                 ),
             }
@@ -2614,7 +3307,9 @@ def main(argv: list[str] | None = None) -> int:
                 else "draft_save_not_verified"
             )
         else:
-            report["result"] = "preview_filled"
+            report["result"] = preview_result(
+                sku_model, report["fields"], report.get("state_before_save")
+            )
 
         report["publish_guard_events"] = read_publish_guard_events(page)
         report["publish_clicked"] = any(bool(item.get("blocked")) for item in report["publish_guard_events"] if isinstance(item, dict))

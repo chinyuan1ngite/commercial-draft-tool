@@ -156,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
             if status != "ready":
                 report["result"] = (
                     "seller_login_timeout" if status == "login_timeout"
+                    else "seller_navigation_failed"
+                    if str(status).startswith("navigation_error:")
                     else "seller_browser_closed_during_login"
                 )
                 report["login_wait_status"] = status

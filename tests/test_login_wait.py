@@ -40,6 +40,18 @@ class LoginWaitTests(unittest.TestCase):
         self.assertEqual(result, "ready")
         self.assertEqual(page.opened, [target, target])
 
+    @patch("draft_tool.browser_actions.navigate_with_alert_recovery")
+    def test_navigation_failure_is_returned_as_workflow_status(self, navigate):
+        navigate.side_effect = RuntimeError("No such target id")
+        page = type("Page", (), {"url": "https://offer-new.1688.com/"})()
+
+        result = open_seller_page(
+            page, "https://offer-new.1688.com/popular/publish.htm",
+            login_timeout_seconds=0, settle_seconds=0,
+        )
+
+        self.assertEqual(result, "navigation_error:RuntimeError")
+
 
 if __name__ == "__main__":
     unittest.main()

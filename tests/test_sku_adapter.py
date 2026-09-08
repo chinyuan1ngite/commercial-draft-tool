@@ -64,6 +64,16 @@ class SkuAdapterTests(unittest.TestCase):
         self.assertFalse(invalid["valid"])
         self.assertEqual(len(invalid["issues"]), 3)
 
+    def test_visible_merchant_code_does_not_stand_in_for_hidden_sku_identity(self):
+        model = normalize_sku_model([{
+            "sku_id": "SOURCE-1", "name": "红", "properties": {"颜色": "红"}, "price": 8, "stock": 3,
+        }])
+        result = validate_target_rows(model, [{
+            "sku_id": "", "sku_identity_available": False,
+            "properties": {"颜色": "红"}, "price": 8, "stock": 3,
+        }])
+        self.assertTrue(result["valid"], result["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()

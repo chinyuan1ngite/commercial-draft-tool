@@ -10,7 +10,7 @@ from typing import Any
 from PIL import Image
 
 from .config import QualityConfig, TargetConfig
-from .sku_adapter import normalize_sku_model
+from .sku_adapter import is_valid_sku_price, normalize_sku_model
 from .security import atomic_write
 
 
@@ -114,15 +114,18 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
         warnings.append(f"合规主图将按平台上限处理: {len(valid_main)}>{quality.max_main_images}")
     if quality.require_detail_images and not valid_detail:
         issues.append("缺少详情图")
+    sku_model = normalize_sku_model(product.get("skus") or [])
     price = (product.get("price") or {}).get("primary")
     try:
         parsed_price = Decimal(str(price).strip())
         valid_price = parsed_price.is_finite() and Decimal("0") < parsed_price <= Decimal("99999999.99")
     except (InvalidOperation, ValueError, AttributeError):
         valid_price = False
-    if not valid_price:
+    sku_prices_valid = bool(sku_model.get("source_count")) and bool(sku_model.get("valid", True)) and all(
+        is_valid_sku_price(row.get("price")) for row in sku_model.get("rows") or []
+    )
+    if not valid_price and not sku_prices_valid:
         issues.append("主价格必须大于 0")
-    sku_model = normalize_sku_model(product.get("skus") or [])
     if sku_model.get("source_count") and not sku_model.get("valid", True):
         issues.extend(str(item) for item in sku_model.get("warnings") or [])
     if sku_model.get("warnings"):

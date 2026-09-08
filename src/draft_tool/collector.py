@@ -14,11 +14,14 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
+
+from .browser_navigation import navigate_with_alert_recovery as _navigate_with_alert_recovery
 
 from .sku_adapter import normalize_sku_model
 from .security import MAX_TOTAL_IMAGE_BYTES, atomic_write, download_image, hostname_allowed, read_allowlisted_url
@@ -149,6 +152,53 @@ def parse_attributes(soup: BeautifulSoup) -> dict[str, str]:
     return attributes
 
 
+def parse_package_weights(html: str) -> list[dict[str, Any]]:
+    """Extract seller-provided package weights from the offer page."""
+    records: list[dict[str, Any]] = []
+    # The embedded payload is JSON, but the surrounding page may HTML-escape
+    # quotes. Decode from the marker instead of using a bracket-greedy regex so
+    # nested fields and additional records do not truncate the array.
+    embedded = html_lib.unescape(html)
+    marker = '"pieceWeightScaleInfo"'
+    marker_index = embedded.find(marker)
+    if marker_index >= 0:
+        try:
+            value_start = embedded.find(":", marker_index + len(marker)) + 1
+            payload, _ = json.JSONDecoder().raw_decode(embedded[value_start:].lstrip())
+        except (json.JSONDecodeError, TypeError, ValueError):
+            payload = []
+    else:
+        payload = []
+    if isinstance(payload, dict):
+        payload = payload.get("items") or payload.get("list") or []
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            try:
+                weight = float(item.get("weight"))
+            except (TypeError, ValueError):
+                continue
+            if not weight.is_integer() or not 0 < weight <= 1_000_000:
+                continue
+            record: dict[str, Any] = {"weight_grams": int(weight), "source": "collected"}
+            sku_id = str(item.get("skuId") or item.get("sku_id") or "").strip()
+            if sku_id:
+                record["sku_id"] = sku_id
+            records.append(record)
+    if not records:
+        match = re.search(
+            r"(?:重量\s*\(\s*g\s*\)|重量（g）|重量)\s*</(?:th|td)>\s*<(?:td|th)[^>]*>\s*([0-9]+(?:\.[0-9]+)?)",
+            embedded,
+            re.I,
+        )
+        if match:
+            weight = float(match.group(1))
+            if weight.is_integer() and 0 < weight <= 1_000_000:
+                records.append({"weight_grams": int(weight), "source": "collected"})
+    return records
+
+
 def _normalize_sku_name(value: str) -> str:
     # Embedded specAttrs is sometimes HTML-escaped (for example ``&gt;``).
     # Decode it before applying status/quantity cleanup so the same source SKU
@@ -243,7 +293,7 @@ def _embedded_sale_properties(html: str) -> list[dict[str, Any]]:
     return result
 
 
-def _make_sku(index: int, name: str, price: float, stock: int, sku_id: str | None = None, raw_item: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def _make_sku(index: int, name: str, price: float | None, stock: int, sku_id: str | None = None, raw_item: dict[str, Any] | None = None) -> dict[str, Any] | None:
     name = _normalize_sku_name(name)
     if not name or len(name) > 160:
         return None
@@ -251,7 +301,7 @@ def _make_sku(index: int, name: str, price: float, stock: int, sku_id: str | Non
         "sku_id": sku_id or f"local-{index}",
         "name": name,
         "properties": _sku_properties(name, raw_item),
-        "price": float(price),
+        "price": float(price) if price is not None else None,
         "stock": int(stock),
     }
 
@@ -279,6 +329,7 @@ def parse_skus(body: str) -> list[dict[str, Any]]:
 
 
 def parse_embedded_skus(html: str, default_price: float | None = None) -> list[dict[str, Any]]:
+    html = html_lib.unescape(html)
     """Read the stable SKU map embedded in window.context on current 1688 pages."""
     marker = '"skuMap":'
     start = html.find(marker)
@@ -298,6 +349,23 @@ def parse_embedded_skus(html: str, default_price: float | None = None) -> list[d
         default_price = float(price_match.group(1)) if price_match else 0.0
 
     sale_properties = _embedded_sale_properties(html)
+    # Some 1688 pages keep stock/spec rows in skuMap but put prices in the
+    # sibling skuInfoMap. Index both payloads by skuId before falling back to
+    # the product-level price.
+    sku_info_by_id: dict[str, dict[str, Any]] = {}
+    info_marker = '"skuInfoMap":'
+    info_start = html.find(info_marker)
+    if info_start >= 0:
+        info_open = html.find("{", info_start + len(info_marker))
+        if info_open >= 0:
+            try:
+                info_payload, _ = json.JSONDecoder().raw_decode(html[info_open:])
+            except (json.JSONDecodeError, TypeError):
+                info_payload = {}
+            if isinstance(info_payload, dict):
+                for info in info_payload.values():
+                    if isinstance(info, dict) and info.get("skuId") is not None:
+                        sku_info_by_id[str(info["skuId"])] = info
     skus: list[dict[str, Any]] = []
     for item in payload:
         if not isinstance(item, dict):
@@ -305,11 +373,40 @@ def parse_embedded_skus(html: str, default_price: float | None = None) -> list[d
         name = item.get("specAttrs") or item.get("skuName") or ""
         stock = item.get("canBookCount")
         sku_id = item.get("skuId")
-        if not name or not isinstance(stock, (int, float)):
+        if not name or isinstance(stock, bool):
+            continue
+        try:
+            stock_decimal = Decimal(str(stock))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if (
+            not stock_decimal.is_finite()
+            or stock_decimal != stock_decimal.to_integral_value()
+            or stock_decimal < 0
+            or stock_decimal > Decimal("2147483647")
+        ):
             continue
         item_with_properties = dict(item)
         item_with_properties["__sale_properties"] = sale_properties
-        parsed = _make_sku(len(skus) + 1, str(name), default_price or float(item.get("price", 0) or 0), int(stock), str(sku_id) if sku_id else None, item_with_properties)
+        # A product-level price cannot safely stand in for one missing row in a
+        # multi-SKU listing. Preserve the missing value so the quality gate can
+        # stop the workflow instead of publishing invented SKU prices.
+        info_item = sku_info_by_id.get(str(sku_id)) or {}
+        raw_price = (
+            item.get("price") or item.get("discountPrice")
+            or info_item.get("price") or info_item.get("discountPrice")
+        )
+        try:
+            sku_price = (
+                float(raw_price) if raw_price not in (None, "")
+                else (float(default_price) if len(payload) == 1 and default_price is not None else None)
+            )
+        except (TypeError, ValueError):
+            sku_price = None
+        parsed = _make_sku(
+            len(skus) + 1, str(name), sku_price, int(stock_decimal),
+            str(sku_id) if sku_id else None, item_with_properties
+        )
         if parsed:
             skus.append(parsed)
     return skus
@@ -461,6 +558,7 @@ def parse_html(
             "total_observed": sum(stock_values) if stock_values else None,
             "sku_values": stock_values,
         },
+        "package_weights": parse_package_weights(html),
         "attributes": parse_attributes(soup),
         # The embedded map carries the source skuId; rendered text is the fallback
         # for pages where the map is missing or has not loaded yet.
@@ -529,7 +627,7 @@ def collect_with_browser(url: str, profile_dir: Path, wait_seconds: int) -> tupl
     options.headless(False)
     page = ChromiumPage(options)
     try:
-        page.get(validate_url(url))
+        _navigate_with_alert_recovery(page, validate_url(url))
         try:
             page.wait.load_start()
         except Exception:

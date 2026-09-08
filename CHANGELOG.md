@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.12 - 2026-09-08
+
+- Fixed required multi-select properties by removing conflicting seller-page prefill values and avoiding mutually exclusive `不限` selections.
+- Applied the seller form's documented `是否IP授权=否` default only when the source listing has no IP-license value; other missing required attributes remain blocked.
+- Retried async searchable enum options after entering the requested value.
+
+## 0.4.11 - 2026-09-08
+
+- Fixed required enum properties such as `玩具材质` remaining empty after a direct-text fallback; selection now uses the active dropdown and requires a confirmed selected value.
+- Fixed `最小起订量` values that were visible in the DOM but missing from the Ant form state by reacquiring the remounted control and validating its numeric/error state.
+
+## 0.4.10 - 2026-09-08
+
+- Unified SKU price-field detection so `批发价` is used consistently during fill, pre-save validation, and reopen verification.
+- Preserved missing multi-SKU prices as invalid data instead of silently replacing them with the product-level price.
+- Required reliable SKU identifiers before applying different collected package weights; skipped weight filling when neither source data nor an explicit override exists.
+- Reported incomplete or invalid previews instead of returning success when SKU, quotation, weight, or page validation checks fail.
+- Reduced property-option polling and removed ambiguous substring option matching.
+
+## 0.4.9 - 2026-09-07
+
+- Read per-SKU prices from `skuInfoMap` when 1688 separates prices from the SKU stock/spec map.
+- Correctly detect multi-price products and select `按产品规格报价` for those listings.
+
+## 0.4.8 - 2026-09-07
+
+- Recovered pending browser alert dialogs before product collection navigation and retried the navigation once when DrissionPage reports `AlertExistsError`.
+
+## 0.4.7 - 2026-09-07
+
+- Preserved each SKU's own price from the source `skuMap` instead of replacing it with the product-level price.
+- Automatically selected `按产品规格报价` and filled row-level prices when a product has multiple distinct SKU prices.
+
+## 0.4.6 - 2026-09-07
+
+- Retried asynchronously rendered category-property options so collected values such as `戏水玩具类别=玩沙工具` are selected reliably.
+- Used the logistics batch-weight control for uniform weights, removing unnecessary per-SKU browser round trips and waits.
+
+## 0.4.5 - 2026-09-07
+
+- Collected seller-provided package weights and mapped them to logistics SKU rows.
+- Used a validated 1000g fallback when source weights are unavailable, with reopen verification against the actual values written.
+
 ## 0.4.4 - 2026-09-07
 
 - Collected structured 1688 decision attributes such as material, function, and packaging method from the newer page layout.
