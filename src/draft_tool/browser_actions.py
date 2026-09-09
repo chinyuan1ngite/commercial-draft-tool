@@ -312,7 +312,7 @@ def configure_sku_images(
 
 def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path) -> bool:
     """Upload or select one SKU image through the row-level picture picker."""
-    add_button = row.ele('css:.sku-picture-content, css:.sku-picture-url', timeout=2)
+    add_button = row.ele('css:.sku-picture-content, .sku-picture-url', timeout=2)
     if not add_button:
         return False
     add_button.click()

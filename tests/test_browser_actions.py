@@ -6,6 +6,7 @@ from draft_tool.browser_actions import (
     _is_sku_price_hint,
     _requested_property_parts,
     _set_input_value,
+    _configure_sku_image_via_picker,
     add_sale_dimensions,
     discover_sale_property_slots,
     fill_package_weights,
@@ -24,6 +25,23 @@ from draft_tool.browser_navigation import dismiss_unexpected_popups
 
 
 class BrowserActionTests(unittest.TestCase):
+    @patch("draft_tool.browser_actions._picker_submit", return_value=True)
+    @patch("draft_tool.browser_actions._picker_select_titles", return_value=1)
+    @patch("draft_tool.browser_actions._close_picture_picker")
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    def test_sku_image_picker_uses_valid_css_locator(self, _sleep, _close, _select, _submit):
+        page = MagicMock()
+        row = MagicMock()
+        add_button = MagicMock()
+        row.ele.return_value = add_button
+        frame = MagicMock()
+        page.get_frame.return_value = frame
+
+        self.assertTrue(_configure_sku_image_via_picker(page, row, Path("C:/tmp/red.jpg")))
+        selector = row.ele.call_args.args[0]
+        self.assertEqual(selector, "css:.sku-picture-content, .sku-picture-url")
+        self.assertNotIn(", css:", selector)
+
     def test_discover_sale_property_slots_uses_spec_blocks(self):
         page = MagicMock()
         page.run_js.return_value = [
