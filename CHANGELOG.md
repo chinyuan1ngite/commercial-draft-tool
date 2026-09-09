@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.17 - 2026-09-09
+
+- Fixed the SKU image add-button picker to use a valid CSS locator.
+
 ## 0.4.16 - 2026-09-09
 
 - Recognized two-dimensional SKU sale properties by spec blocks instead of placeholder keywords.
