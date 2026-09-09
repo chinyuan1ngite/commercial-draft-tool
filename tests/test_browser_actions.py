@@ -333,6 +333,78 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(result["status"], "filled")
         self.assertEqual(result["expected_weights"], [100, 200, 1000])
 
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    def test_varying_weights_map_by_logistics_spec_cell(self, _sleep):
+        page = MagicMock()
+        module = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        specs = ["【芭比粉】医生收纳盒42件套", "【芭比粉】医生收纳盒65件套"]
+        for row, spec in zip(rows, specs):
+            row.attr.return_value = ""
+            spec_node = MagicMock()
+            spec_node.text = spec
+            dimensions = [MagicMock(), MagicMock(), MagicMock()]
+            for dimension in dimensions:
+                dimension.attr.return_value = ""
+            weight_input = MagicMock()
+            state = {"value": ""}
+            weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
+            weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
+
+            def eles(selector, spec_node=spec_node, dimensions=dimensions, weight_input=weight_input):
+                if selector == 'css:input[type="hidden"]':
+                    return []
+                if selector == 'css:.sku-field-prop':
+                    return [spec_node]
+                if selector == 'css:input:not([type="hidden"])':
+                    return [*dimensions, weight_input]
+                return []
+
+            row.eles.side_effect = eles
+        module.eles.return_value = rows
+        module.ele.return_value = None
+        page.ele.return_value = module
+
+        result = fill_package_weights(
+            page,
+            [{"sku_id": "A", "weight_grams": 316}, {"sku_id": "B", "weight_grams": 637}],
+            source_skus=[
+                {"sku_id": "A", "properties": {"颜色": "【芭比粉】医生收纳盒42件套"}},
+                {"sku_id": "B", "properties": {"颜色": "【芭比粉】医生收纳盒65件套"}},
+            ],
+        )
+
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["expected_weights"], [316, 637])
+
+    def test_ambiguous_logistics_spec_does_not_map_varying_weights(self):
+        page = MagicMock()
+        module = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        for row in rows:
+            row.attr.return_value = ""
+            spec_node = MagicMock()
+            spec_node.text = "【芭比粉】医生收纳盒42件套"
+            row.eles.side_effect = lambda selector, spec_node=spec_node: (
+                [] if selector == 'css:input[type="hidden"]'
+                else [spec_node] if selector == 'css:.sku-field-prop'
+                else []
+            )
+        module.eles.return_value = rows
+        module.ele.return_value = None
+        page.ele.return_value = module
+
+        result = fill_package_weights(
+            page,
+            [{"sku_id": "A", "weight_grams": 316}, {"sku_id": "B", "weight_grams": 637}],
+            source_skus=[
+                {"sku_id": "A", "properties": {"颜色": "【芭比粉】医生收纳盒42件套"}},
+                {"sku_id": "B", "properties": {"颜色": "【芭比粉】医生收纳盒42件套"}},
+            ],
+        )
+
+        self.assertEqual(result["status"], "mapping_ambiguous")
+
     def test_duplicate_merchant_codes_do_not_map_varying_weights(self):
         page = MagicMock()
         module = MagicMock()

@@ -1236,10 +1236,22 @@ def fill_freight_template(page: ChromiumPage, preferred: str) -> dict[str, Any]:
     return result
 
 
+def _spec_identity_values(props: Any) -> list[str]:
+    """Return normalized SKU property values in insertion order."""
+    if not isinstance(props, dict):
+        return []
+    return [clean_sku_value(value) for value in props.values() if clean_sku_value(value)]
+
+
+def _spec_identity_key(values: list[str]) -> str:
+    return "\u001f".join(values)
+
+
 def fill_package_weights(
     page: ChromiumPage,
     source_weights: list[dict[str, Any]] | None,
     default_weight_grams: int | None = None,
+    source_skus: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fill weights only when source data or an explicit default is available.
 
@@ -1281,6 +1293,18 @@ def fill_package_weights(
     unkeyed_weights = [
         int(item["weight_grams"]) for item in valid_source_weights if not item.get("sku_id")
     ]
+    spec_key_to_sku_id: dict[str, str] = {}
+    if source_skus:
+        grouped_specs: dict[str, list[str]] = {}
+        for sku in source_skus:
+            sku_id = str(sku.get("sku_id") or "").strip()
+            key = _spec_identity_key(_spec_identity_values(sku.get("properties") or sku.get("specProps")))
+            if sku_id and key:
+                grouped_specs.setdefault(key, []).append(sku_id)
+        for key, sku_ids in grouped_specs.items():
+            unique_ids = list(dict.fromkeys(sku_ids))
+            if len(unique_ids) == 1:
+                spec_key_to_sku_id[key] = unique_ids[0]
     common_weight = (
         int(valid_source_weights[0]["weight_grams"])
         if len(valid_source_weights) == 1 and not valid_source_weights[0].get("sku_id")
@@ -1334,6 +1358,18 @@ def fill_package_weights(
                 value = str(item.attr("value") or "").strip()
                 if value:
                     return value
+        # Some logistics tables expose SKU identity only through the visible
+        # specification cells (for example the 颜色 column), not a SKU id or
+        # merchant code. Map those cells back to the source SKU id when the
+        # specification is unique and unambiguous.
+        spec_key = _spec_identity_key([
+            clean_sku_value((node.text or "").strip())
+            for node in row.eles("css:.sku-field-prop")
+            if (node.text or "").strip()
+        ])
+        mapped_sku = spec_key_to_sku_id.get(spec_key)
+        if mapped_sku and mapped_sku in weight_by_sku:
+            return mapped_sku
         return ""
 
     row_ids = [row_sku_id(row) for row in rows] if weight_by_sku else [""] * len(rows)
@@ -3169,6 +3205,7 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["package_dimensions"] = fill_package_weights(
             page, product.get("package_weights"),
             default_weight_grams=args.package_weight_grams,
+            source_skus=product.get("skus"),
         )
         if report["fields"]["package_dimensions"]["status"] not in {"filled", "skipped"}:
             report.setdefault("warnings", []).append("件重无法可靠映射到目标规格行")
