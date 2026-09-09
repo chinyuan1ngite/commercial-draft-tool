@@ -26,6 +26,16 @@ def specification_key(value: Any) -> str:
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if normalized else ""
 
 
+def specification_contains(full: Any, partial: Any) -> bool:
+    full_key = specification_key(full)
+    partial_key = specification_key(partial)
+    if not full_key or not partial_key:
+        return False
+    full_values = json.loads(full_key)
+    partial_values = json.loads(partial_key)
+    return all(full_values.get(key) == value for key, value in partial_values.items())
+
+
 def _safe_path(product_path: Path, raw: str) -> Path | None:
     path = Path(raw)
     if path.is_absolute() or not path.parts or ".." in path.parts:
@@ -53,6 +63,7 @@ def resolve_sku_image_paths(product_path: Path, product: dict[str, Any]) -> tupl
         return result, [f"不支持的媒体清单版本: {manifest.get('version') if isinstance(manifest, dict) else None!r}"]
     by_id: dict[str, list[Path]] = {}
     by_spec: dict[str, list[Path]] = {}
+    partial_specs: list[tuple[Any, Path]] = []
     item_by_ref: dict[str, Path] = {}
     items = manifest.get("items")
     if not isinstance(items, list):
@@ -80,6 +91,7 @@ def resolve_sku_image_paths(product_path: Path, product: dict[str, Any]) -> tupl
                 by_id.setdefault(sku_id, []).append(path)
             if spec:
                 by_spec.setdefault(spec, []).append(path)
+                partial_specs.append((identity.get("specification"), path))
     for sku in product.get("skus") or []:
         key = str(sku.get("sku_id") or "").strip()
         candidates = [item_by_ref[str(sku.get("image_ref"))] for _ in [0] if str(sku.get("image_ref") or "") in item_by_ref]
@@ -87,6 +99,11 @@ def resolve_sku_image_paths(product_path: Path, product: dict[str, Any]) -> tupl
             candidates = by_id.get(key, [])
         if not candidates:
             candidates = by_spec.get(specification_key(sku.get("properties") or sku.get("specProps")), [])
+        if not candidates:
+            candidates = [
+                path for spec, path in partial_specs
+                if specification_contains(sku.get("properties") or sku.get("specProps"), spec)
+            ]
         unique = list(dict.fromkeys(candidates))
         if len(unique) == 1:
             result[key or specification_key(sku.get("properties"))] = unique[0]

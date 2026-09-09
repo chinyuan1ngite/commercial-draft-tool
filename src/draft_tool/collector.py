@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from .browser_navigation import navigate_with_alert_recovery as _navigate_with_alert_recovery
-from .media import specification_key as _specification_key
+from .media import specification_contains, specification_key as _specification_key
 
 from .sku_adapter import normalize_sku_model
 from .security import MAX_TOTAL_IMAGE_BYTES, atomic_write, download_image, hostname_allowed, read_allowlisted_url
@@ -156,6 +156,15 @@ def attach_sku_image_refs(
             spec_key = _specification_key(sku.get("properties") or sku.get("specProps"))
             spec_candidates = by_specification.get(spec_key, []) if spec_key else []
             entry = spec_candidates[0] if len(spec_candidates) == 1 else None
+        if entry is None:
+            partial_candidates = [
+                candidate for candidate in sku_images
+                if specification_contains(
+                    sku.get("properties") or sku.get("specProps"), candidate.get("specification")
+                )
+            ]
+            candidate_urls = {str(candidate.get("url") or "") for candidate in partial_candidates}
+            entry = partial_candidates[0] if len(candidate_urls) == 1 and partial_candidates else None
         if entry is None:
             continue
         item = by_url.get(str(entry.get("url") or ""))
@@ -953,6 +962,18 @@ def refresh_sku_image_refs(product: dict[str, Any]) -> None:
                         if isinstance(identity, dict)
                     )
                 ]
+        if not candidates:
+            partial_candidates = [
+                item for item in entries if item.get("status", "saved") == "saved"
+                and any(
+                    specification_contains(
+                        sku.get("properties") or sku.get("specProps"), identity.get("specification")
+                    )
+                    for identity in item.get("sku_identities") or [] if isinstance(identity, dict)
+                )
+            ]
+            if len({str(item.get("id") or "") for item in partial_candidates}) == 1:
+                candidates = partial_candidates
         if len(candidates) == 1:
             sku["image_ref"] = candidates[0].get("id")
 

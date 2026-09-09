@@ -66,6 +66,34 @@ class SecurityAndCollectorTests(unittest.TestCase):
         ])
         self.assertEqual(images[0]["specification"], {"颜色": "红色"})
 
+    def test_property_image_is_attached_to_each_matching_multidimensional_sku(self):
+        images = [{
+            "url": "https://cbu01.alicdn.com/img/ibank/red.jpg",
+            "specification": {"颜色": "红色"},
+        }]
+        manifest = build_media_manifest([], [], images)
+        skus = [
+            {"sku_id": "A", "properties": {"颜色": "红色", "尺寸": "大"}},
+            {"sku_id": "B", "properties": {"颜色": "红色", "尺寸": "小"}},
+        ]
+
+        attach_sku_image_refs(skus, manifest, images)
+
+        self.assertEqual(skus[0]["image_ref"], manifest["items"][0]["id"])
+        self.assertEqual(skus[1]["image_ref"], manifest["items"][0]["id"])
+
+    def test_conflicting_property_images_are_not_attached_to_multidimensional_sku(self):
+        images = [
+            {"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "specification": {"颜色": "红色"}},
+            {"url": "https://cbu01.alicdn.com/img/ibank/large.jpg", "specification": {"尺寸": "大"}},
+        ]
+        manifest = build_media_manifest([], [], images)
+        skus = [{"sku_id": "A", "properties": {"颜色": "红色", "尺寸": "大"}}]
+
+        attach_sku_image_refs(skus, manifest, images)
+
+        self.assertNotIn("image_ref", skus[0])
+
     def test_sku_images_are_remote_only_when_download_disabled(self):
         manifest = build_media_manifest([], [], [{"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "sku_id": "1"}])
         materialize_sku_images(manifest, Path(tempfile.mkdtemp()) / "sku-assets", "100", False)

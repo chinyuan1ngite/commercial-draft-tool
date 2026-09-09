@@ -1315,7 +1315,7 @@ def fill_package_weights(
         value = str(
             row.attr("data-sku-id") or row.attr("data-skuid") or row.attr("data-skuId") or ""
         ).strip()
-        if value:
+        if value in weight_by_sku:
             return value
         hidden = next(
             (item for item in row.eles('css:input[type="hidden"]')
@@ -1323,7 +1323,9 @@ def fill_package_weights(
             None,
         )
         if hidden:
-            return str(hidden.attr("value") or "").strip()
+            hidden_value = str(hidden.attr("value") or "").strip()
+            if hidden_value in weight_by_sku:
+                return hidden_value
         # Seller rows often expose the source SKU only in the visible
         # merchant-code field, while hiding the platform SKU identity.
         for item in row.eles('css:input:not([type="hidden"])'):
@@ -1334,13 +1336,13 @@ def fill_package_weights(
                     return value
         return ""
 
-    row_ids = [row_sku_id(row) for row in rows]
+    row_ids = [row_sku_id(row) for row in rows] if weight_by_sku else [""] * len(rows)
     keyed_distinct = {value for value in weight_by_sku.values()}
     if len(keyed_distinct) > 1:
         if any(not value for value in row_ids):
             result.update(status="mapping_ambiguous", reason="target_rows_missing_sku_id")
             return result
-        if len(set(row_ids)) != len(row_ids) or set(row_ids) != set(weight_by_sku):
+        if len(set(row_ids)) != len(row_ids) or not set(weight_by_sku).issubset(set(row_ids)):
             result.update(status="mapping_ambiguous", reason="target_row_identity_mismatch")
             return result
     if len(set(unkeyed_weights)) > 1:

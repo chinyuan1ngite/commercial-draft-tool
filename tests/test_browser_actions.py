@@ -269,6 +269,70 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(result["status"], "filled")
         self.assertEqual(result["expected_weights"], [100, 200])
 
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    def test_target_platform_id_falls_back_to_matching_merchant_code(self, _sleep):
+        page = MagicMock()
+        module = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        for row, code, platform_id in zip(rows, ["A", "B"], ["target-1", "target-2"]):
+            row.attr.side_effect = lambda key, platform_id=platform_id: platform_id if key == "data-sku-id" else ""
+            hidden = MagicMock()
+            hidden.attr.side_effect = lambda key, platform_id=platform_id: platform_id if key == "value" else "sku_id"
+            code_input = MagicMock()
+            code_input.attr.side_effect = lambda key, code=code: code if key == "value" else "单品货号"
+            dimensions = [MagicMock(), MagicMock(), MagicMock()]
+            for dimension in dimensions:
+                dimension.attr.return_value = ""
+            weight_input = MagicMock()
+            state = {"value": ""}
+            weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
+            weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
+            row.eles.side_effect = lambda selector, hidden=hidden, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
+                [hidden] if selector == 'css:input[type="hidden"]' else [*dimensions, weight_input, code_input]
+            )
+        module.eles.return_value = rows
+        module.ele.return_value = None
+        page.ele.return_value = module
+
+        result = fill_package_weights(page, [
+            {"sku_id": "A", "weight_grams": 100},
+            {"sku_id": "B", "weight_grams": 200},
+        ])
+
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["expected_weights"], [100, 200])
+
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    def test_missing_sku_weight_uses_default_without_discarding_collected_weights(self, _sleep):
+        page = MagicMock()
+        module = MagicMock()
+        rows = [MagicMock(), MagicMock(), MagicMock()]
+        for row, code in zip(rows, ["A", "B", "C"]):
+            row.attr.return_value = ""
+            code_input = MagicMock()
+            code_input.attr.side_effect = lambda key, code=code: code if key == "value" else "单品货号"
+            dimensions = [MagicMock(), MagicMock(), MagicMock()]
+            for dimension in dimensions:
+                dimension.attr.return_value = ""
+            weight_input = MagicMock()
+            state = {"value": ""}
+            weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
+            weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
+            row.eles.side_effect = lambda selector, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
+                [] if selector == 'css:input[type="hidden"]' else [*dimensions, weight_input, code_input]
+            )
+        module.eles.return_value = rows
+        module.ele.return_value = None
+        page.ele.return_value = module
+
+        result = fill_package_weights(page, [
+            {"sku_id": "A", "weight_grams": 100},
+            {"sku_id": "B", "weight_grams": 200},
+        ])
+
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["expected_weights"], [100, 200, 1000])
+
     def test_duplicate_merchant_codes_do_not_map_varying_weights(self):
         page = MagicMock()
         module = MagicMock()
