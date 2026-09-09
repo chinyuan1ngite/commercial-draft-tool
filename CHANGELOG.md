@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.16 - 2026-09-09
+
+- Recognized two-dimensional SKU sale properties by spec blocks instead of placeholder keywords.
+- Filled plain-text properties directly and stopped double-committing searchable select values.
+- Dismissed unexpected native dialogs and unrelated overlays between fill steps.
+
 ## 0.4.15 - 2026-09-09
 
 - Mapped per-SKU package weights through the seller logistics spec column when rows expose no SKU id or merchant code.
