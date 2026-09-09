@@ -228,6 +228,56 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(result["status"], "mapping_ambiguous")
         self.assertEqual(result["filled"], 0)
 
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    def test_varying_keyed_weights_use_merchant_code_as_safe_fallback(self, _sleep):
+        page = MagicMock()
+        module = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        codes = ["A", "B"]
+        for row, code in zip(rows, codes):
+            row.attr.return_value = ""
+            code_input = MagicMock()
+            code_input.attr.side_effect = lambda key, code=code: code if key == "value" else "单品货号"
+            dimensions = [MagicMock(), MagicMock(), MagicMock()]
+            for dimension in dimensions:
+                dimension.attr.return_value = ""
+            weight_input = MagicMock()
+            state = {"value": ""}
+            weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
+            weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
+            row.eles.side_effect = lambda selector, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
+                [] if selector == 'css:input[type="hidden"]' else [*dimensions, weight_input, code_input]
+            )
+        module.eles.return_value = rows
+        module.ele.return_value = None
+        page.ele.return_value = module
+        result = fill_package_weights(page, [
+            {"sku_id": "A", "weight_grams": 100},
+            {"sku_id": "B", "weight_grams": 200},
+        ])
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["expected_weights"], [100, 200])
+
+    def test_duplicate_merchant_codes_do_not_map_varying_weights(self):
+        page = MagicMock()
+        module = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        for row in rows:
+            row.attr.return_value = ""
+            code = MagicMock()
+            code.attr.side_effect = lambda key: "A" if key == "value" else "单品货号"
+            row.eles.side_effect = lambda selector, code=code: (
+                [] if selector == 'css:input[type="hidden"]' else [code]
+            )
+        module.eles.return_value = rows
+        page.ele.return_value = module
+        result = fill_package_weights(page, [
+            {"sku_id": "A", "weight_grams": 100},
+            {"sku_id": "B", "weight_grams": 200},
+        ])
+        self.assertEqual(result["status"], "mapping_ambiguous")
+        self.assertEqual(result["reason"], "target_row_identity_mismatch")
+
     def test_preview_reports_invalid_sku_instead_of_success(self):
         result = preview_result(
             {"source_count": 2, "valid": True},
