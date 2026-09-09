@@ -259,8 +259,8 @@ def configure_sku_images(
         return result
     rendered = read_sku_table_rows(page)
     mapping = match_sku_rows_by_specification(source_skus, rendered)
-    if mapping is None and not rendered:
-        mapping = list(range(len(source_skus)))
+    if mapping is None and len(source_skus) == 1 and len(target_rows) == 1:
+        mapping = [0]
     if mapping is None:
         result.update(status="mapping_ambiguous", reason="target_sku_rows_could_not_be_matched")
         return result
@@ -2752,6 +2752,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package-weight-grams", type=int)
     parser.add_argument("--category-rules", type=Path, required=True)
     parser.add_argument("--require-sku-images", action="store_true")
+    parser.add_argument("--no-configure-sku-images", action="store_true")
     parser.add_argument("--preview-only", action="store_true")
     parser.add_argument("--save-draft", action="store_true")
     parser.add_argument("--existing-draft-id", default="")
@@ -2785,6 +2786,10 @@ def main(argv: list[str] | None = None) -> int:
     sku_image_paths, sku_image_errors = resolve_sku_image_paths(args.product, product)
     if main_asset_errors:
         raise SystemExit("商品主图素材校验失败：" + "；".join(main_asset_errors))
+    if detail_asset_errors:
+        raise SystemExit("商品详情素材校验失败：" + "；".join(detail_asset_errors))
+    if sku_image_errors:
+        raise SystemExit("SKU 图片素材校验失败：" + "；".join(sku_image_errors))
     category_id = str(args.category_id).strip()
     if not category_id:
         raise SystemExit("目标类目未确认")
@@ -3032,7 +3037,24 @@ def main(argv: list[str] | None = None) -> int:
             "table": {"selected": {"row_count": 0}},
             "rendered": [],
         }
-        if sku_image_paths:
+        sku_capability = probe_sku_image_capability(page) if sku_image_paths else {
+            "supported": False, "scope": "unknown", "controls": [], "row_images": []
+        }
+        report["fields"]["sku_image_capability"] = sku_capability
+        if args.no_configure_sku_images and sku_image_paths:
+            report["fields"]["sku_images"] = {
+                "status": "disabled", "requested": len(sku_image_paths),
+                "configured": 0, "failed": [], "scope": "sku_row",
+            }
+        elif sku_image_paths and not (
+            sku_capability.get("supported") and sku_capability.get("scope") == "sku_row"
+        ):
+            report["fields"]["sku_images"] = {
+                "status": "unsupported_mapping", "requested": len(sku_image_paths),
+                "configured": 0, "failed": [{"reason": "target_page_has_no_row_level_sku_image_control"}],
+                "scope": sku_capability.get("scope") or "unknown",
+            }
+        elif sku_image_paths:
             report["fields"]["sku_images"] = configure_sku_images(
                 page, normalized_sku_rows, sku_image_paths,
                 page.eles('css:table[data-codex-sku-table="1"] tbody tr'),

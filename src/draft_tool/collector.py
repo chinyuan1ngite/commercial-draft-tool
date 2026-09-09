@@ -133,10 +133,15 @@ def attach_sku_image_refs(
     skus: list[dict[str, Any]], manifest: dict[str, Any], sku_images: list[dict[str, Any]]
 ) -> None:
     """Attach manifest IDs to source SKU rows without copying media metadata."""
-    by_sku_id = {
-        str(entry.get("sku_id") or "").strip(): entry
-        for entry in sku_images if str(entry.get("sku_id") or "").strip()
-    }
+    by_sku_id: dict[str, list[dict[str, Any]]] = {}
+    by_specification: dict[str, list[dict[str, Any]]] = {}
+    for entry in sku_images:
+        sku_id = str(entry.get("sku_id") or "").strip()
+        if sku_id:
+            by_sku_id.setdefault(sku_id, []).append(entry)
+        spec_key = _specification_key(entry.get("specification"))
+        if spec_key:
+            by_specification.setdefault(spec_key, []).append(entry)
     by_url = {
         str(item.get("source_url") or ""): item
         for item in manifest.get("items") or []
@@ -144,12 +149,28 @@ def attach_sku_image_refs(
     }
     for sku in skus:
         source_id = str(sku.get("sku_id") or "").strip()
-        entry = by_sku_id.get(source_id)
+        id_candidates = by_sku_id.get(source_id, [])
+        entry = id_candidates[0] if len(id_candidates) == 1 else None
+        if entry is None:
+            spec_key = _specification_key(sku.get("properties") or sku.get("specProps"))
+            spec_candidates = by_specification.get(spec_key, []) if spec_key else []
+            entry = spec_candidates[0] if len(spec_candidates) == 1 else None
         if entry is None:
             continue
         item = by_url.get(str(entry.get("url") or ""))
         if item:
             sku["image_ref"] = item.get("id")
+
+
+def _specification_key(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    normalized = {
+        str(key).strip(): clean_text(str(item))
+        for key, item in value.items()
+        if str(key).strip() and clean_text(str(item))
+    }
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if normalized else ""
 
 
 def now_iso() -> str:
@@ -670,11 +691,11 @@ def parse_html(
     begin_amount = re.search(r"[\"']beginAmount[\"']\s*:\s*(\d+)", html)
     min_order_match = re.search(r"(\d+)\s*(件|盒|个)起批", body)
     min_order = min_order_match.group(0) if min_order_match else (f"{begin_amount.group(1)}件起批" if begin_amount else "")
+    gallery_images = parse_images(soup, html)
     parsed_skus = parse_embedded_skus(html, primary_price) or parse_skus(body)
     sku_image_entries = parse_embedded_sku_images(html)
     media_manifest = build_media_manifest(gallery_images, [], sku_image_entries)
     attach_sku_image_refs(parsed_skus, media_manifest, sku_image_entries)
-    gallery_images = parse_images(soup, html)
     product = {
         "schema_version": "1.0",
         "status": "blocked" if is_blocked(source_url, soup.title.get_text(" ", strip=True) if soup.title else "", body) else "ok",
@@ -857,6 +878,17 @@ def materialize_sku_images(
         safe_namespace = re.sub(r"[^0-9A-Za-z_-]+", "-", namespace).strip("-") or "offer"
         provisional = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
         path = asset_dir / f"{safe_namespace}-sku-{index:02d}-{provisional}{suffix}"
+        if path.is_file():
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                item.update(
+                    id=f"sha256:{digest}", sha256=digest,
+                    local_path=str(Path("sku-assets") / path.name), status="saved",
+                )
+                by_url[url] = item
+                continue
+            except OSError:
+                pass
         try:
             if not is_product_image(url):
                 raise ValueError("SKU 图片 URL 未通过 1688 图库主机校验")
@@ -882,17 +914,36 @@ def refresh_sku_image_refs(product: dict[str, Any]) -> None:
             if any(str(identity.get("sku_id") or "").strip() == sku_id
                    for identity in item.get("sku_identities") or [])
         ]
+        if not candidates:
+            spec_key = _specification_key(sku.get("properties") or sku.get("specProps"))
+            if spec_key:
+                candidates = [
+                    item for item in entries
+                    if any(
+                        _specification_key(identity.get("specification")) == spec_key
+                        for identity in item.get("sku_identities") or []
+                        if isinstance(identity, dict)
+                    )
+                ]
         if len(candidates) == 1:
             sku["image_ref"] = candidates[0].get("id")
 
 
-def save_collection(product: dict[str, Any], html: str, output_dir: Path, download: bool) -> Path:
+def save_collection(
+    product: dict[str, Any], html: str, output_dir: Path, download: bool,
+    collect_sku_images: bool = True,
+) -> Path:
     offer_id = product["source"]["offer_id"]
     target = output_dir / offer_id
     target.mkdir(parents=True, exist_ok=True)
     atomic_write(target / "raw.html", html)
     manifest = product.setdefault("media_manifest", {"version": MEDIA_MANIFEST_VERSION, "items": []})
-    materialize_sku_images(manifest, target / "sku-assets", offer_id, download)
+    if collect_sku_images:
+        materialize_sku_images(manifest, target / "sku-assets", offer_id, download)
+    else:
+        for item in manifest.get("items") or []:
+            if isinstance(item, dict) and item.get("role") == "sku_image":
+                item["status"] = "disabled"
     refresh_sku_image_refs(product)
     if download:
         product["assets"] = download_images(
@@ -937,6 +988,7 @@ def main(argv: list[str] | None = None) -> int:
         help="检测到登录/验证页后等待用户处理的秒数；负数表示不限时",
     )
     parser.add_argument("--no-download-images", action="store_true")
+    parser.add_argument("--no-collect-sku-images", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -958,7 +1010,10 @@ def main(argv: list[str] | None = None) -> int:
                 product["detail_text"] = product["description"]["text"]
             except Exception as exc:
                 product.setdefault("warnings", []).append(f"详情接口采集失败: {exc}")
-        target = save_collection(product, html, args.output_dir, not args.no_download_images)
+        target = save_collection(
+            product, html, args.output_dir, not args.no_download_images,
+            collect_sku_images=not args.no_collect_sku_images,
+        )
         print(json.dumps({
             "status": product["status"],
             "offer_id": product["source"]["offer_id"],

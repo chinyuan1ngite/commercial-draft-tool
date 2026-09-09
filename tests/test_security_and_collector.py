@@ -17,11 +17,25 @@ from draft_tool.collector import (
     refresh_sku_image_refs,
     parse_images,
     parse_package_weights,
+    parse_html,
 )
 from draft_tool.security import DraftLedger, hostname_allowed, profile_lock
 
 
 class SecurityAndCollectorTests(unittest.TestCase):
+    def test_parse_html_builds_media_manifest_after_gallery_parse(self):
+        html = '''<html><head><title>玩具</title></head><body>玩具 ¥5</body>
+        <script>window.x={"mainImage":["https://cbu01.alicdn.com/img/ibank/product.jpg"],"skuMap":[{"skuId":"1","specAttrs":"红","price":"5","canBookCount":1,"imageUrl":"https://cbu01.alicdn.com/img/ibank/red.jpg"}]}</script></html>'''
+        product = parse_html(html, "https://detail.1688.com/offer/123456.html")
+        self.assertEqual(product["media_manifest"]["items"][0]["role"], "main_image")
+        self.assertEqual(product["skus"][0]["image_ref"], product["media_manifest"]["items"][1]["id"])
+
+    def test_sku_image_specification_is_used_when_source_id_is_missing(self):
+        images = [{"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "specification": {"颜色": "红"}}]
+        manifest = build_media_manifest([], [], images)
+        skus = [{"sku_id": "", "properties": {"颜色": "红"}}]
+        attach_sku_image_refs(skus, manifest, images)
+        self.assertEqual(skus[0]["image_ref"], manifest["items"][0]["id"])
     def test_structured_sku_image_builds_manifest_reference(self):
         html = '<script>window.x={"skuMap":[{"skuId":"1","specAttrs":"红","canBookCount":3,"price":"5.2","imageUrl":"https://cbu01.alicdn.com/img/ibank/red.jpg"}]}</script>'
         images = parse_embedded_sku_images(html)

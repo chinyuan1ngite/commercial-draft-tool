@@ -45,6 +45,19 @@ class BrowserActionTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "confirmed")
         file_input.input.assert_called_once()
+
+    @patch("draft_tool.browser_actions.read_sku_table_rows", return_value=[])
+    def test_multi_sku_image_configuration_never_guesses_row_order(self, _read):
+        rows = [MagicMock(), MagicMock()]
+        result = configure_sku_images(
+            MagicMock(),
+            [{"sku_id": "1", "name": "红"}, {"sku_id": "2", "name": "蓝"}],
+            {"1": Path("C:/tmp/red.jpg"), "2": Path("C:/tmp/blue.jpg")},
+            rows,
+        )
+        self.assertEqual(result["status"], "mapping_ambiguous")
+        for row in rows:
+            row.ele.assert_not_called()
     def test_missing_ip_license_uses_seller_documented_safe_default(self):
         self.assertEqual(safe_required_attribute_default("是否IP授权"), "否")
         self.assertIsNone(safe_required_attribute_default("品牌"))

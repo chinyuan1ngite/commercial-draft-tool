@@ -86,6 +86,7 @@ class ConfigDialog(tk.Toplevel):
         self.on_saved = on_saved
         self.payload = json.loads(config_path.read_text(encoding="utf-8"))
         self.values: dict[str, tk.StringVar] = {}
+        self.media_values: dict[str, tk.BooleanVar] = {}
         body = ttk.Frame(self, padding=16)
         body.pack(fill="both", expand=True)
         target = self.payload.get("target") or {}
@@ -96,6 +97,18 @@ class ConfigDialog(tk.Toplevel):
             self.values[key] = var
             ttk.Entry(body, textvariable=var).grid(row=row, column=1, sticky="ew", pady=6)
         row = len(self.FIELDS)
+        quality = self.payload.setdefault("quality", {})
+        self.require_sku_images_var = tk.BooleanVar(value=bool(quality.get("require_sku_images", False)))
+        ttk.Checkbutton(body, text="SKU 图片缺失时阻止保存草稿", variable=self.require_sku_images_var).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=6
+        )
+        row += 1
+        media = self.payload.setdefault("media", {})
+        for key, label in (("collect_sku_images", "采集 SKU 图片"), ("configure_sku_images", "填写 SKU 图片")):
+            value = tk.BooleanVar(value=bool(media.get(key, True)))
+            self.media_values[key] = value
+            ttk.Checkbutton(body, text=label, variable=value).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
+            row += 1
         ttk.Label(body, text="卖家 Profile 目录").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
         self.profile_var = tk.StringVar(value=str(self.payload.get("profile_dir") or ""))
         ttk.Entry(body, textvariable=self.profile_var).grid(row=row, column=1, sticky="ew", pady=6)
@@ -117,6 +130,8 @@ class ConfigDialog(tk.Toplevel):
                 target[key] = int(value) if key == "package_weight_grams" and value else (value or None)
             self.payload["profile_dir"] = self.profile_var.get().strip()
             self.payload["output_root"] = self.output_var.get().strip()
+            self.payload.setdefault("quality", {})["require_sku_images"] = self.require_sku_images_var.get()
+            self.payload["media"] = {key: value.get() for key, value in self.media_values.items()}
             validation_path = self.config_path.with_name("settings.validation.json")
             atomic_write(validation_path, json.dumps(self.payload, ensure_ascii=False, indent=2))
             try:
@@ -216,6 +231,13 @@ class Launcher(tk.Tk):
             "--profile-dir", str(self.paths["buyer_profile"]),
             "--wait-for-challenge", "-1",
         ]
+        try:
+            config = AppConfig.from_file(Path(self.config_var.get().strip()))
+            if not config.media.collect_sku_images:
+                arguments.append("--no-collect-sku-images")
+        except Exception as exc:
+            messagebox.showerror("配置无效", str(exc), parent=self)
+            return
         self._start("--collect", arguments, "正在采集商品", self._after_collect)
 
     def run_product(self, action: str) -> None:
