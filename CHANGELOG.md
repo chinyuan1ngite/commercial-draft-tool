@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.13 - 2026-09-09
+
+- Added SKU image collection and per-SKU seller-page configuration with source SKU ID and unique specification matching.
+- Added read-only SKU image capability probing and fail-closed handling for unsupported row-level controls.
+- Added SKU image quality-gate validation, content-hash reuse, media-manifest structure validation, and launcher switches for collection/configuration.
+- Video collection and configuration remain deferred.
+
 ## 0.4.12 - 2026-09-08
 
 - Fixed required multi-select properties by removing conflicting seller-page prefill values and avoiding mutually exclusive `不限` selections.

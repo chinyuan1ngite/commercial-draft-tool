@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from .browser_navigation import navigate_with_alert_recovery as _navigate_with_alert_recovery
+from .media import specification_key as _specification_key
 
 from .sku_adapter import normalize_sku_model
 from .security import MAX_TOTAL_IMAGE_BYTES, atomic_write, download_image, hostname_allowed, read_allowlisted_url
@@ -160,17 +161,6 @@ def attach_sku_image_refs(
         item = by_url.get(str(entry.get("url") or ""))
         if item:
             sku["image_ref"] = item.get("id")
-
-
-def _specification_key(value: Any) -> str:
-    if not isinstance(value, dict):
-        return ""
-    normalized = {
-        str(key).strip(): clean_text(str(item))
-        for key, item in value.items()
-        if str(key).strip() and clean_text(str(item))
-    }
-    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if normalized else ""
 
 
 def now_iso() -> str:
@@ -892,7 +882,17 @@ def materialize_sku_images(
         try:
             if not is_product_image(url):
                 raise ValueError("SKU 图片 URL 未通过 1688 图库主机校验")
-            download_image(url, path, max_bytes=5 * 1024 * 1024)
+            last_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    path.unlink(missing_ok=True)
+                    download_image(url, path, max_bytes=5 * 1024 * 1024)
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             item.update(
                 id=f"sha256:{digest}", sha256=digest,
@@ -908,9 +908,11 @@ def refresh_sku_image_refs(product: dict[str, Any]) -> None:
     manifest = product.get("media_manifest") or {}
     entries = [item for item in manifest.get("items") or [] if item.get("role") == "sku_image"]
     for sku in product.get("skus") or []:
+        # Disabled/remote-only media must never leave a usable SKU reference.
+        sku.pop("image_ref", None)
         sku_id = str(sku.get("sku_id") or "").strip()
         candidates = [
-            item for item in entries
+            item for item in entries if item.get("status", "saved") == "saved"
             if any(str(identity.get("sku_id") or "").strip() == sku_id
                    for identity in item.get("sku_identities") or [])
         ]
@@ -918,7 +920,7 @@ def refresh_sku_image_refs(product: dict[str, Any]) -> None:
             spec_key = _specification_key(sku.get("properties") or sku.get("specProps"))
             if spec_key:
                 candidates = [
-                    item for item in entries
+                    item for item in entries if item.get("status", "saved") == "saved"
                     if any(
                         _specification_key(identity.get("specification")) == spec_key
                         for identity in item.get("sku_identities") or []

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 
@@ -57,6 +58,24 @@ class SecurityAndCollectorTests(unittest.TestCase):
         manifest = build_media_manifest([], [], [{"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "sku_id": "1"}])
         materialize_sku_images(manifest, Path(tempfile.mkdtemp()) / "sku-assets", "100", False)
         self.assertEqual(manifest["items"][0]["status"], "remote_only")
+
+    def test_sku_image_download_retries_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "sku-assets"
+            manifest = build_media_manifest([], [], [{"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "sku_id": "1"}])
+
+            def download(_url, path, max_bytes):
+                if download.calls == 0:
+                    download.calls += 1
+                    raise OSError("temporary")
+                path.write_bytes(b"image")
+                return 5
+
+            download.calls = 0
+            with patch("draft_tool.collector.download_image", side_effect=download) as mocked:
+                materialize_sku_images(manifest, target, "100", True)
+            self.assertEqual(mocked.call_count, 2)
+            self.assertEqual(manifest["items"][0]["status"], "saved")
 
     def test_sku_image_refs_refresh_to_content_hash(self):
         manifest = {"version": 1, "items": [{

@@ -22,6 +22,8 @@ from DrissionPage import ChromiumOptions, ChromiumPage
 from PIL import Image
 
 from .browser_navigation import navigate_with_alert_recovery
+from .media import resolve_sku_image_paths as _resolve_sku_image_paths
+from .media import specification_key
 from .sku_adapter import clean_sku_value, normalize_sku_model, validate_target_rows
 from .security import atomic_write
 
@@ -214,28 +216,7 @@ def resolve_detail_asset_paths(product_path: Path, product: dict[str, Any]) -> t
 
 def resolve_sku_image_paths(product_path: Path, product: dict[str, Any]) -> tuple[dict[str, Path], list[str]]:
     """Resolve saved SKU images by their manifest identities."""
-    result: dict[str, Path] = {}
-    errors: list[str] = []
-    manifest = product.get("media_manifest") or {}
-    if manifest.get("version", 1) > 1:
-        return {}, [f"不支持的媒体清单版本: {manifest.get('version')}"]
-    for item in manifest.get("items") or []:
-        if not isinstance(item, dict) or item.get("role") != "sku_image":
-            continue
-        if item.get("status") != "saved":
-            continue
-        raw = Path(str(item.get("local_path") or ""))
-        resolved = _resolve_manifest_path(product_path, raw, "sku-assets")
-        if not resolved:
-            errors.append(f"SKU 图片路径越界或不存在: {raw}")
-            continue
-        for identity in item.get("sku_identities") or []:
-            if not isinstance(identity, dict):
-                continue
-            sku_id = str(identity.get("sku_id") or "").strip()
-            if sku_id:
-                result[sku_id] = resolved
-    return result, errors
+    return _resolve_sku_image_paths(product_path, product)
 
 
 def configure_sku_images(
@@ -249,6 +230,7 @@ def configure_sku_images(
         "status": "skipped" if not sku_image_paths else "unsupported",
         "requested": len(sku_image_paths),
         "configured": 0,
+        "configured_sku_ids": [],
         "failed": [],
         "scope": "sku_row",
     }
@@ -266,7 +248,9 @@ def configure_sku_images(
         return result
     for source_index, source in enumerate(source_skus):
         sku_id = str(source.get("sku_id") or "").strip()
-        path = sku_image_paths.get(sku_id)
+        path = sku_image_paths.get(sku_id) or sku_image_paths.get(
+            specification_key(source.get("properties") or source.get("specProps"))
+        )
         if not path:
             continue
         row = target_rows[mapping[source_index]]
@@ -293,6 +277,7 @@ def configure_sku_images(
                 time.sleep(.25)
             if confirmed:
                 result["configured"] += 1
+                result["configured_sku_ids"].append(sku_id)
             else:
                 result["failed"].append({"sku_id": sku_id, "reason": "image_preview_not_confirmed"})
         except Exception as exc:
@@ -2152,7 +2137,8 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
            return {
              text: (row.innerText || '').trim(), inputs, sku_id: targetSkuId,
              sku_identity_available: Boolean(targetSkuId), merchant_code: codeInput?.value || '',
-             properties: values, headers
+             properties: values, headers,
+             image_count: Array.from(row.querySelectorAll('img')).filter(img => img.offsetParent !== null).length
            };
         });
         """
@@ -2786,9 +2772,7 @@ def main(argv: list[str] | None = None) -> int:
     sku_image_paths, sku_image_errors = resolve_sku_image_paths(args.product, product)
     if main_asset_errors:
         raise SystemExit("商品主图素材校验失败：" + "；".join(main_asset_errors))
-    if detail_asset_errors:
-        raise SystemExit("商品详情素材校验失败：" + "；".join(detail_asset_errors))
-    if sku_image_errors:
+    if sku_image_errors and args.require_sku_images:
         raise SystemExit("SKU 图片素材校验失败：" + "；".join(sku_image_errors))
     category_id = str(args.category_id).strip()
     if not category_id:
@@ -3392,6 +3376,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             report["description_reopen_verified"] = False
+            expected_sku_images = int((report["fields"].get("sku_images") or {}).get("configured", 0))
+            report["sku_images_reopen_verified"] = not expected_sku_images
             if report["draft_url"]:
                 navigate_with_alert_recovery(page, report["draft_url"])
                 # Draft form hydrates logistics controls after the main React
@@ -3414,6 +3400,11 @@ def main(argv: list[str] | None = None) -> int:
                 report["state_after_reopen"] = inspect_state(page)
                 discover_sku_table(page)
                 reopened_rows = read_sku_table_rows(page)
+                reopened_sku_image_rows = sum(1 for row in reopened_rows if int(row.get("image_count") or 0) > 0)
+                report["sku_images_reopen_verified"] = (
+                    reopened_sku_image_rows >= expected_sku_images
+                    if expected_sku_images else True
+                )
                 reopened_for_validation = []
                 reopened_page_price = str((read_price_range(page).get("price") or "")).strip()
                 if not reopened_page_price:
@@ -3450,6 +3441,7 @@ def main(argv: list[str] | None = None) -> int:
                 "category": reopened.get("category_id_value") == category_id or f"catId={category_id}" in str(reopened.get("url") or ""),
                 "main_images": int(reopened.get("main_image_count") or 0) >= int(report["fields"].get("main_images_expected") or 0),
                 "sku_values": bool((report.get("sku_reopen_validation") or {}).get("valid")),
+                "sku_images": bool(report.get("sku_images_reopen_verified", True)),
                 "price": (
                     bool((report.get("sku_reopen_validation") or {}).get("valid"))
                     if bool((report.get("fields", {}).get("quotation_type") or {}).get("required"))

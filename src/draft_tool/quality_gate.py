@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image
 
 from .config import QualityConfig, TargetConfig
+from .media import resolve_sku_image_paths, specification_key
 from .sku_adapter import is_valid_sku_price, normalize_sku_model
 from .security import atomic_write
 
@@ -46,21 +47,7 @@ def _saved_paths(product_path: Path, product: dict[str, Any], key: str) -> tuple
 
 
 def _sku_image_paths(product_path: Path, product: dict[str, Any]) -> tuple[dict[str, Path], list[str]]:
-    paths: dict[str, Path] = {}
-    issues: list[str] = []
-    for item in (product.get("media_manifest") or {}).get("items") or []:
-        if not isinstance(item, dict) or item.get("role") != "sku_image" or item.get("status") != "saved":
-            continue
-        raw = Path(str(item.get("local_path") or ""))
-        candidate = _resolve_asset_path(product_path, raw, "sku-assets")
-        if not candidate:
-            issues.append(f"SKU 图片路径越界或不存在: {raw}")
-            continue
-        for identity in item.get("sku_identities") or []:
-            sku_id = str(identity.get("sku_id") or "").strip() if isinstance(identity, dict) else ""
-            if sku_id:
-                paths[sku_id] = candidate
-    return paths, issues
+    return resolve_sku_image_paths(product_path, product)
 
 
 def _check_images(paths: list[Path], quality: QualityConfig, label: str, min_width: int, min_height: int) -> tuple[list[Path], list[str]]:
@@ -119,15 +106,30 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
     main_paths, main_issues = _saved_paths(product_path, product, "assets")
     detail_paths, detail_issues = _saved_paths(product_path, product, "detail_assets")
     sku_image_paths, sku_image_issues = _sku_image_paths(product_path, product)
-    issues.extend(sku_image_issues)
-    issues.extend(main_issues + detail_issues)
+    sku_schema_issues = [
+        item for item in sku_image_issues
+        if "媒体清单版本" in item or "media_manifest" in item or "sku_identities" in item
+    ]
+    sku_asset_issues = [item for item in sku_image_issues if item not in sku_schema_issues]
+    issues.extend(sku_schema_issues)
+    (issues if quality.require_sku_images else warnings).extend(sku_asset_issues)
+    issues.extend(main_issues)
+    (issues if quality.require_detail_images else warnings).extend(detail_issues)
     valid_main, rejected_main = _check_images(
         main_paths, quality, "主图", quality.min_image_width, quality.min_image_height
     )
     valid_detail, rejected_detail = _check_images(
         detail_paths, quality, "详情图", quality.min_detail_width, quality.min_detail_height
     )
-    warnings.extend(rejected_main + rejected_detail)
+    valid_sku_paths, rejected_sku = _check_images(
+        list(dict.fromkeys(sku_image_paths.values())), quality, "SKU 图片",
+        quality.min_image_width, quality.min_image_height,
+    )
+    valid_sku_set = set(valid_sku_paths)
+    sku_image_paths = {
+        sku_id: path for sku_id, path in sku_image_paths.items() if path in valid_sku_set
+    }
+    warnings.extend(rejected_main + rejected_detail + rejected_sku)
     if len(valid_main) < quality.min_main_images:
         issues.append(f"合规主图不足: {len(valid_main)}/{quality.min_main_images}")
     if len(valid_main) > quality.max_main_images:
@@ -135,10 +137,12 @@ def validate_product(product_path: Path, target: TargetConfig, quality: QualityC
     if quality.require_detail_images and not valid_detail:
         issues.append("缺少详情图")
     sku_model = normalize_sku_model(product.get("skus") or [])
-    missing_sku_images = [
-        str(row.get("sku_id") or "") for row in sku_model.get("rows") or []
-        if str(row.get("sku_id") or "") not in sku_image_paths
-    ]
+    missing_sku_images = []
+    for row in sku_model.get("rows") or []:
+        sku_key = str(row.get("sku_id") or "")
+        fallback_key = specification_key(row.get("properties") or row.get("specProps"))
+        if sku_key not in sku_image_paths and fallback_key not in sku_image_paths:
+            missing_sku_images.append(sku_key)
     if quality.require_sku_images and missing_sku_images:
         issues.append(f"SKU 图片不足: {len(sku_image_paths)}/{len(sku_model.get('rows') or [])}")
     elif missing_sku_images:

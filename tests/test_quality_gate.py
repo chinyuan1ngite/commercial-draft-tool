@@ -118,6 +118,16 @@ class QualityGateTests(unittest.TestCase):
             self.assertFalse(required["passed"])
             self.assertTrue(any("SKU 图片不足" in item for item in required["issues"]))
 
+    def test_malformed_media_manifest_is_blocked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.make_product(Path(folder))
+            product = json.loads(path.read_text(encoding="utf-8"))
+            product["media_manifest"] = {"version": 99, "items": []}
+            path.write_text(json.dumps(product), encoding="utf-8")
+            result = validate_product(path, self.target(), QualityConfig())
+            self.assertFalse(result["passed"])
+            self.assertTrue(any("媒体清单版本" in issue for issue in result["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()
