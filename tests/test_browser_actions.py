@@ -18,9 +18,31 @@ from draft_tool.browser_actions import (
     safe_required_attribute_default,
     source_property_map,
 )
+from draft_tool.browser_navigation import dismiss_unexpected_popups
 
 
 class BrowserActionTests(unittest.TestCase):
+    def test_unexpected_native_dialogs_are_dismissed(self):
+        page = MagicMock()
+        page.handle_alert.side_effect = ["提示", None]
+        page.run_js.return_value = None
+
+        dismissed = dismiss_unexpected_popups(page)
+
+        self.assertEqual(dismissed, ["提示"])
+        self.assertEqual(page.handle_alert.call_count, 2)
+        page.run_js.assert_called_once()
+
+    def test_unexpected_popup_dismissal_is_safe_without_native_dialog(self):
+        page = MagicMock()
+        page.handle_alert.side_effect = Exception("no alert")
+        page.run_js.return_value = None
+
+        dismissed = dismiss_unexpected_popups(page)
+
+        self.assertEqual(dismissed, [])
+        page.run_js.assert_called_once()
+
     def test_sku_image_capability_probe_is_read_only(self):
         page = MagicMock()
         page.run_js.return_value = {"supported": True, "scope": "sku_row", "controls": []}

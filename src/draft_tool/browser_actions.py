@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from DrissionPage import ChromiumOptions, ChromiumPage
 from PIL import Image
 
-from .browser_navigation import navigate_with_alert_recovery
+from .browser_navigation import dismiss_unexpected_popups, navigate_with_alert_recovery
 from .media import resolve_sku_image_paths as _resolve_sku_image_paths
 from .media import specification_key
 from .config import DEFAULT_PACKAGE_WEIGHT_GRAMS
@@ -3006,6 +3006,7 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
         install_publish_guards(page)
+        dismiss_unexpected_popups(page)
         report["fields"]["title"] = input_value(
             page, "#guid-title input", str(product.get("title") or "")
         )
@@ -3022,6 +3023,7 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["main_images_accepted"] = accepted_image_meta
         report["fields"]["main_images_rejected"] = rejected_images
 
+        dismiss_unexpected_popups(page)
         source_attrs = product.get("attributes") or {}
         prop_map = source_property_map(page, source_attrs)
         # A collected listing does not always expose every mandatory property
@@ -3121,6 +3123,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "manual_confirmation_required",
             }
 
+        dismiss_unexpected_popups(page)
         sku_model = normalize_sku_model(product.get("skus") or [])
         report["fields"]["sku_model"] = sku_model
         report["fields"]["sku_dimensions"] = add_sale_dimensions(page, sku_model)
@@ -3284,6 +3287,7 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["description_source_images"] = len(source_detail_paths)
         report["fields"]["description_prepared_images"] = prepared_detail_meta
         report["fields"]["description_rejected_images"] = rejected_detail_images
+        dismiss_unexpected_popups(page)
         try:
             report["fields"]["description"] = fill_description_components(
                 page, product, detail_paths
@@ -3435,6 +3439,7 @@ def main(argv: list[str] | None = None) -> int:
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
+            dismiss_unexpected_popups(page)
             button = page.ele("css:#saveDraftButton", timeout=5)
             if not button:
                 report["result"] = "save_draft_button_missing"

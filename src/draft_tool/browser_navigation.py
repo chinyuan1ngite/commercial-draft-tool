@@ -14,6 +14,41 @@ def dismiss_pending_alert(page: Any) -> str | None:
     return str(text or "").strip() or None
 
 
+def dismiss_unexpected_popups(page: Any, max_native: int = 3) -> list[str]:
+    """Dismiss stale native dialogs and close unrelated seller-page overlays.
+
+    Native alert/confirm/prompt dialogs block the next CDP call until they are
+    accepted, so they are drained before touching the page DOM. Common modal
+    close controls are then clicked, except for the picture picker and the
+    description schema editor, which may be legitimately open mid-flow.
+    """
+    dismissed: list[str] = []
+    for _ in range(max_native):
+        try:
+            text = page.handle_alert(accept=True, timeout=0.2)
+        except Exception:
+            break
+        if not text:
+            break
+        dismissed.append(str(text or "").strip())
+    try:
+        page.run_js(
+            """
+            const active = node =>
+              Boolean(node.closest('.ibank-picker-dialog')) ||
+              Boolean(node.closest('.ant-modal')?.querySelector('iframe[src*="schema"]'));
+            Array.from(document.querySelectorAll(
+              '.next-dialog-close, .ant-modal-close, .ui-dialog-close, .window-action-close'
+            )).forEach(node => {
+              if (!active(node)) node.click();
+            });
+            """
+        )
+    except Exception:
+        pass
+    return [text for text in dismissed if text]
+
+
 def is_alert_exists_error(exc: BaseException) -> bool:
     message = f"{type(exc).__name__}: {exc}".lower()
     return "alertexists" in message or "alert exists" in message or "未处理的提示框" in str(exc)
