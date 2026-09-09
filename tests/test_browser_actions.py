@@ -58,6 +58,21 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(result["status"], "mapping_ambiguous")
         for row in rows:
             row.ele.assert_not_called()
+
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    @patch("draft_tool.browser_actions.time.time", side_effect=[0, 1, 9])
+    @patch("draft_tool.browser_actions.read_sku_table_rows", return_value=[])
+    def test_existing_row_image_is_not_upload_confirmation(self, _read, _time, _sleep):
+        row = MagicMock()
+        row.ele.return_value = MagicMock()
+        row.eles.return_value = [MagicMock()]
+        result = configure_sku_images(
+            MagicMock(), [{"sku_id": "1", "name": "红"}],
+            {"1": Path("C:/tmp/red.jpg")}, [row],
+        )
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["failed"][0]["reason"], "image_preview_not_confirmed")
+
     def test_missing_ip_license_uses_seller_documented_safe_default(self):
         self.assertEqual(safe_required_attribute_default("是否IP授权"), "否")
         self.assertIsNone(safe_required_attribute_default("品牌"))

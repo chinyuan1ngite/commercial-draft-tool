@@ -269,7 +269,9 @@ def configure_sku_images(
             while time.time() < deadline:
                 try:
                     after = len(row.eles("tag:img"))
-                    confirmed = after > before or after > 0
+                    # Existing placeholder/history images are not evidence that
+                    # this upload succeeded. Require a concrete count increase.
+                    confirmed = after > before
                 except Exception:
                     confirmed = False
                 if confirmed:
