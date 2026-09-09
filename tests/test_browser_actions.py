@@ -73,6 +73,39 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(result["status"], "unsupported")
         self.assertEqual(result["failed"][0]["reason"], "image_preview_not_confirmed")
 
+    @patch("draft_tool.browser_actions._configure_sku_image_via_picker", return_value=True)
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    @patch("draft_tool.browser_actions.read_sku_table_rows", return_value=[])
+    def test_sku_image_configuration_uses_add_button_picker(self, _read, _sleep, _picker):
+        page = MagicMock()
+        row = MagicMock()
+        row.ele.return_value = None
+        row.eles.side_effect = [[], [MagicMock()]]
+        result = configure_sku_images(
+            page,
+            [{"sku_id": "1", "name": "红"}],
+            {"1": Path("C:/tmp/red.jpg")},
+            [row],
+        )
+        self.assertEqual(result["status"], "confirmed")
+        _picker.assert_called_once()
+
+    @patch("draft_tool.browser_actions._configure_sku_image_via_picker", return_value=False)
+    @patch("draft_tool.browser_actions.read_sku_table_rows", return_value=[])
+    def test_sku_image_add_button_picker_failure_is_fail_closed(self, _read, _picker):
+        page = MagicMock()
+        row = MagicMock()
+        row.ele.return_value = None
+        row.eles.return_value = []
+        result = configure_sku_images(
+            page,
+            [{"sku_id": "1", "name": "红"}],
+            {"1": Path("C:/tmp/red.jpg")},
+            [row],
+        )
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["failed"][0]["reason"], "picker_image_control_failed")
+
     def test_missing_ip_license_uses_seller_documented_safe_default(self):
         self.assertEqual(safe_required_attribute_default("是否IP授权"), "否")
         self.assertIsNone(safe_required_attribute_default("品牌"))

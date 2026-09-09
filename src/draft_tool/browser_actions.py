@@ -255,23 +255,43 @@ def configure_sku_images(
         if not path:
             continue
         row = target_rows[mapping[source_index]]
-        file_input = row.ele('css:input[type="file"]', timeout=2)
-        if not file_input:
-            result["failed"].append({"sku_id": sku_id, "reason": "row_image_control_missing"})
-            continue
+        file_input = row.ele('css:input[type="file"]', timeout=1)
         try:
             before = len(row.eles("tag:img"))
         except Exception:
             before = 0
-        try:
-            file_input.input(str(path.resolve()))
+        if file_input:
+            try:
+                file_input.input(str(path.resolve()))
+                deadline = time.time() + 8
+                confirmed = False
+                while time.time() < deadline:
+                    try:
+                        after = len(row.eles("tag:img"))
+                        # Existing placeholder/history images are not evidence that
+                        # this upload succeeded. Require a concrete count increase.
+                        confirmed = after > before
+                    except Exception:
+                        confirmed = False
+                    if confirmed:
+                        break
+                    time.sleep(.25)
+                if confirmed:
+                    result["configured"] += 1
+                    result["configured_sku_ids"].append(sku_id)
+                else:
+                    result["failed"].append({"sku_id": sku_id, "reason": "image_preview_not_confirmed"})
+            except Exception as exc:
+                result["failed"].append({"sku_id": sku_id, "reason": type(exc).__name__})
+        else:
+            if not _configure_sku_image_via_picker(page, row, path):
+                result["failed"].append({"sku_id": sku_id, "reason": "picker_image_control_failed"})
+                continue
             deadline = time.time() + 8
             confirmed = False
             while time.time() < deadline:
                 try:
                     after = len(row.eles("tag:img"))
-                    # Existing placeholder/history images are not evidence that
-                    # this upload succeeded. Require a concrete count increase.
                     confirmed = after > before
                 except Exception:
                     confirmed = False
@@ -283,13 +303,54 @@ def configure_sku_images(
                 result["configured_sku_ids"].append(sku_id)
             else:
                 result["failed"].append({"sku_id": sku_id, "reason": "image_preview_not_confirmed"})
-        except Exception as exc:
-            result["failed"].append({"sku_id": sku_id, "reason": type(exc).__name__})
     if result["configured"] == result["requested"]:
         result["status"] = "confirmed"
     elif result["configured"]:
         result["status"] = "partial"
     return result
+
+
+def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path) -> bool:
+    """Upload or select one SKU image through the row-level picture picker."""
+    add_button = row.ele('css:.sku-picture-content, css:.sku-picture-url', timeout=2)
+    if not add_button:
+        return False
+    add_button.click()
+    time.sleep(1.2)
+    frame = page.get_frame("css:iframe.picker-frame", timeout=5)
+    if not frame:
+        _close_picture_picker(page)
+        return False
+    try:
+        # Prefer an exact same-title selection for idempotent retries.
+        if _picker_select_titles(frame, [path.stem]) > 0 and _picker_submit(frame):
+            time.sleep(1.2)
+            return True
+        frame.run_js("document.querySelector('li.tab-upload')?.click();")
+        time.sleep(.7)
+        file_input = frame.ele('css:input[type="file"]', timeout=3)
+        if not file_input:
+            return False
+        file_input.input(str(path.resolve()))
+        deadline = time.time() + 20
+        uploaded = False
+        while time.time() < deadline:
+            body = frame.ele("tag:body")
+            if body and "上传成功" in (body.text or ""):
+                uploaded = True
+                break
+            time.sleep(.4)
+        if not uploaded:
+            return False
+        frame.run_js("document.querySelector('li.tab-album')?.click();")
+        time.sleep(1)
+        if _picker_select_titles(frame, [path.stem]) < 1:
+            return False
+        return _picker_submit(frame)
+    except Exception:
+        return False
+    finally:
+        _close_picture_picker(page)
 
 
 def image_info(path: Path) -> dict[str, Any]:
@@ -2222,14 +2283,18 @@ def probe_sku_image_capability(page: ChromiumPage) -> dict[str, Any]:
         const rowImages = rows.map(row => ({
           text: (row.innerText || '').trim(),
           images: Array.from(row.querySelectorAll('img')).filter(visible).map(img => img.src || img.getAttribute('data-src') || '').filter(Boolean).length,
-          fileInputs: Array.from(row.querySelectorAll('input[type="file"]')).length
+          fileInputs: Array.from(row.querySelectorAll('input[type="file"]')).length,
+          addButtons: Array.from(row.querySelectorAll('.sku-picture-content, .sku-picture-url')).filter(visible).length
         }));
+        const hasFileInputs = rowImages.some(item => item.fileInputs);
+        const hasAddButtons = rowImages.some(item => item.addButtons);
         const labels = Array.from(root.querySelectorAll('[class*="sku"], [class*="spec"], th, td'))
           .map(node => (node.innerText || '').trim())
           .filter(text => /图|图片|image|pic/i.test(text));
         return {
-          supported: controls.length > 0 || rowImages.some(item => item.images || item.fileInputs),
-          scope: rowImages.some(item => item.fileInputs) ? 'sku_row' : (labels.length ? 'property_value_or_unknown' : 'unknown'),
+          supported: controls.length > 0 || hasAddButtons || rowImages.some(item => item.images || item.fileInputs),
+          scope: (hasFileInputs || hasAddButtons) ? 'sku_row' : (labels.length ? 'property_value_or_unknown' : 'unknown'),
+          control_type: hasFileInputs ? 'file_input' : (hasAddButtons ? 'add_button' : null),
           controls,
           row_images: rowImages,
           labels: Array.from(new Set(labels)).slice(0, 20)
