@@ -1944,6 +1944,13 @@ def fill_prop(page: ChromiumPage, prop_id: str, value: str) -> bool:
                 )
             # Next/Ant selects may render their menu asynchronously. Retry the
             # lookup briefly after opening so a valid option is not missed.
+            if prop_type in {"input", "text", "textarea"}:
+                _set_input_value(inp, requested)
+                try:
+                    page.ele("css:#guid-title input", timeout=2).click()
+                except Exception:
+                    pass
+                return _compact_text(selected_prop_value(page, prop_id)) == _compact_text(requested)
             for attempt in range(3):
                 trigger.click()
                 time.sleep(.4)
@@ -1953,6 +1960,9 @@ def fill_prop(page: ChromiumPage, prop_id: str, value: str) -> bool:
                     # dropdown until the requested text is entered.
                     inp.input(requested, clear=True)
                     time.sleep(.7)
+                    shown = selected_prop_value(page, prop_id)
+                    if shown and _compact_text(requested) == _compact_text(shown):
+                        return True
                     matched = click_best_visible_option(page, requested)
                 if matched:
                     time.sleep(.25)
@@ -1987,8 +1997,7 @@ def add_sale_values(page: ChromiumPage, placeholder: str, values: list[str]) -> 
         return 0
     selector = f'#guid-saleProp input[placeholder="{placeholder}"]'
     value_script = """
-        return Array.from(document.querySelectorAll('#guid-saleProp input'))
-          .filter(e => (e.getAttribute('placeholder') || '').includes('请输入或选择'))
+        return Array.from(document.querySelectorAll('#guid-saleProp .module-spec-decorator input'))
           .map(e => (e.value || '').trim()).filter(Boolean);
     """
     for value in values:
@@ -2025,17 +2034,17 @@ def discover_sale_property_slots(page: ChromiumPage) -> list[dict[str, Any]]:
     """Discover visible sale-property inputs without relying on a category ID."""
     return list(page.run_js(
         """
-        return Array.from(document.querySelectorAll('#guid-saleProp input'))
-          .filter(input => input.offsetParent !== null &&
-            (input.getAttribute('placeholder') || '').includes('请输入或选择'))
-          .map((input, index) => {
-            const owner = input.closest('.next-form-item, .ant-form-item, li, tr, .next-row');
+        return Array.from(document.querySelectorAll('#guid-saleProp .module-spec-decorator'))
+          .filter(box => box.offsetParent !== null)
+          .map((box, index) => {
+            const input = box.querySelector('input');
             return {
               index,
-              placeholder: input.getAttribute('placeholder') || '',
-              label: (owner?.innerText || '').split('请输入或选择')[0].replace('*', '').trim()
+              placeholder: (input?.getAttribute('placeholder') || '').trim(),
+              label: ((box.querySelector('.nak-label')?.innerText || '').replace('*', '').trim())
             };
-          });
+          })
+          .filter(slot => slot.placeholder);
         """
     ) or [])
 
