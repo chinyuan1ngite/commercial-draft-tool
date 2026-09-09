@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.14 - 2026-09-09
+
+- Collected SKU images from `skuModel.skuProps` sale-property values.
+- Used seller-row merchant codes as a validated fallback for per-SKU package weights.
+- Restored the unified 1000g fallback when source weights are unavailable or cannot be reliably mapped.
+
 ## 0.4.13 - 2026-09-09
 
 - Added SKU image collection and per-SKU seller-page configuration with source SKU ID and unique specification matching.

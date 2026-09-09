@@ -206,11 +206,22 @@ class BrowserActionTests(unittest.TestCase):
         for row in rows:
             row.eles.assert_not_called()
 
-    def test_missing_weight_configuration_skips_logistics_module(self):
+    @patch("draft_tool.browser_actions.time.sleep", return_value=None)
+    def test_missing_weight_uses_1000g_default(self, _sleep):
         page = MagicMock()
+        module = MagicMock()
+        batch_input = MagicMock()
+        batch_submit = MagicMock()
+        module.eles.return_value = [MagicMock(), MagicMock()]
+        module.ele.side_effect = lambda selector, timeout=1: (
+            batch_input if "batch-bar__input" in selector else batch_submit
+        )
+        page.ele.return_value = module
+        page.run_js.return_value = ["1000", "1000"]
         result = fill_package_weights(page, [], default_weight_grams=None)
-        self.assertEqual(result["status"], "skipped")
-        page.ele.assert_not_called()
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["default_weight_grams"], 1000)
+        batch_input.input.assert_called_once_with("1000", clear=True)
 
     def test_varying_keyed_weights_require_real_target_sku_ids(self):
         page = MagicMock()

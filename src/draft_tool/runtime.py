@@ -38,7 +38,7 @@ def default_config_payload(data_dir: Path) -> dict:
             "shipping_address": None,
             "freight_template_text": None,
             "delivery_promise": None,
-            "package_weight_grams": None,
+            "package_weight_grams": 1000,
         },
         "quality": {
             "max_title_chars": 60,

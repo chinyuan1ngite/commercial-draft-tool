@@ -59,9 +59,10 @@ class WorkflowTests(unittest.TestCase):
                 "--shipping-address",
                 "--freight-template-text",
                 "--delivery-promise",
-                "--package-weight-grams",
             ):
                 self.assertNotIn(option, captured)
+            weight_index = captured.index("--package-weight-grams")
+            self.assertEqual(captured[weight_index + 1], "1000")
             self.assertIn("--store-identity-text", captured)
             login_index = captured.index("--login-timeout-seconds")
             self.assertEqual(captured[login_index + 1], "0")

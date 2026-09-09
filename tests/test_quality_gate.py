@@ -11,6 +11,11 @@ from draft_tool.quality_gate import validate_product
 
 
 class QualityGateTests(unittest.TestCase):
+    def test_null_configured_weight_uses_unified_1000g_default(self):
+        config = AppConfig(target=TargetConfig(store_identity_text="店铺", package_weight_grams=None))
+        target = config.effective_target({}, {})
+        self.assertEqual(target.package_weight_grams, 1000)
+
     def test_source_leaf_category_is_default_but_explicit_target_wins(self):
         config = AppConfig(target=TargetConfig(store_identity_text="店铺"))
         source = {"leaf_id": 123648007, "leaf_name": "戏水玩具"}

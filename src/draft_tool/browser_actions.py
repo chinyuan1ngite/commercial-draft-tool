@@ -24,6 +24,7 @@ from PIL import Image
 from .browser_navigation import navigate_with_alert_recovery
 from .media import resolve_sku_image_paths as _resolve_sku_image_paths
 from .media import specification_key
+from .config import DEFAULT_PACKAGE_WEIGHT_GRAMS
 from .sku_adapter import clean_sku_value, normalize_sku_model, validate_target_rows
 from .security import atomic_write
 
@@ -1247,6 +1248,8 @@ def fill_package_weights(
     those fields for later manual confirmation.
     """
     configured_weight: int | None = None
+    if default_weight_grams is None:
+        default_weight_grams = DEFAULT_PACKAGE_WEIGHT_GRAMS
     if default_weight_grams is not None and not isinstance(default_weight_grams, bool):
         try:
             candidate = int(default_weight_grams)

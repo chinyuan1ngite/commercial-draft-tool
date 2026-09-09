@@ -9,7 +9,7 @@
     "shipping_address": null,
     "freight_template_text": null,
     "delivery_promise": null,
-    "package_weight_grams": null
+    "package_weight_grams": 1000
   },
   "quality": {
     "max_title_chars": 60,

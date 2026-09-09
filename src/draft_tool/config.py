@@ -7,6 +7,8 @@ from typing import Any
 
 from .security import atomic_write
 
+DEFAULT_PACKAGE_WEIGHT_GRAMS = 1000
+
 
 @dataclass(frozen=True)
 class TargetConfig:
@@ -16,7 +18,7 @@ class TargetConfig:
     shipping_address: str | None = None
     freight_template_text: str | None = None
     delivery_promise: str | None = None
-    package_weight_grams: int | None = None
+    package_weight_grams: int | None = DEFAULT_PACKAGE_WEIGHT_GRAMS
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,8 @@ class AppConfig:
             key: overrides.get(key) if overrides.get(key) not in (None, "") else getattr(self.target, key)
             for key in TargetConfig.__dataclass_fields__
         }
+        if values["package_weight_grams"] is None:
+            values["package_weight_grams"] = DEFAULT_PACKAGE_WEIGHT_GRAMS
         # A collected product already contains its source leaf category. Use it
         # as the default publishing category, while keeping an explicitly
         # configured/captured target category authoritative.
