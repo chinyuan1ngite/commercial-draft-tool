@@ -54,6 +54,18 @@ class SecurityAndCollectorTests(unittest.TestCase):
         html = '<img src="https://cbu01.alicdn.com/img/ibank/ad.jpg">'
         self.assertEqual(parse_embedded_sku_images(html), [])
 
+    def test_sku_model_property_images_are_collected(self):
+        html = '''<script>window.x={"skuModel":{"skuProps":[{"prop":"颜色","value":[
+          {"name":"红色","imageUrl":"https://cbu01.alicdn.com/img/ibank/red.jpg"},
+          {"name":"蓝色","imageUrl":"https://cbu01.alicdn.com/img/ibank/blue.jpg"}
+        ]}]}}</script>'''
+        images = parse_embedded_sku_images(html)
+        self.assertEqual([item["url"] for item in images], [
+            "https://cbu01.alicdn.com/img/ibank/red.jpg",
+            "https://cbu01.alicdn.com/img/ibank/blue.jpg",
+        ])
+        self.assertEqual(images[0]["specification"], {"颜色": "红色"})
+
     def test_sku_images_are_remote_only_when_download_disabled(self):
         manifest = build_media_manifest([], [], [{"url": "https://cbu01.alicdn.com/img/ibank/red.jpg", "sku_id": "1"}])
         materialize_sku_images(manifest, Path(tempfile.mkdtemp()) / "sku-assets", "100", False)

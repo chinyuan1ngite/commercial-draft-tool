@@ -533,22 +533,20 @@ def parse_embedded_skus(html: str, default_price: float | None = None) -> list[d
 
 
 def parse_embedded_sku_images(html: str) -> list[dict[str, Any]]:
-    """Extract SKU image URLs only from structured SKU records."""
+    """Extract SKU image URLs from structured SKU records and sale properties."""
     embedded = html_lib.unescape(html)
+    result: list[dict[str, Any]] = []
     marker = '"skuMap":'
     start = embedded.find(marker)
-    if start < 0:
-        return []
-    array_start = embedded.find("[", start + len(marker))
-    if array_start < 0:
-        return []
-    try:
-        payload, _ = json.JSONDecoder().raw_decode(embedded[array_start:])
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if not isinstance(payload, list):
-        return []
-    result: list[dict[str, Any]] = []
+    payload: list[Any] = []
+    if start >= 0:
+        array_start = embedded.find("[", start + len(marker))
+        if array_start >= 0:
+            try:
+                parsed, _ = json.JSONDecoder().raw_decode(embedded[array_start:])
+                payload = parsed if isinstance(parsed, list) else []
+            except (json.JSONDecodeError, TypeError):
+                pass
     for item in payload:
         if not isinstance(item, dict):
             continue
@@ -561,6 +559,34 @@ def parse_embedded_sku_images(html: str) -> list[dict[str, Any]]:
             "specification": item.get("properties") or item.get("specProps") or item.get("skuProps") or {},
             "source_evidence": "skuMap.image",
         })
+    model_marker = '"skuModel":'
+    model_start = embedded.find(model_marker)
+    if model_start >= 0:
+        model_open = embedded.find("{", model_start + len(model_marker))
+        if model_open >= 0:
+            try:
+                model, _ = json.JSONDecoder().raw_decode(embedded[model_open:])
+            except (json.JSONDecodeError, TypeError):
+                model = {}
+            for prop in (model.get("skuProps") if isinstance(model, dict) else []) or []:
+                if not isinstance(prop, dict):
+                    continue
+                prop_name = clean_text(str(prop.get("prop") or prop.get("name") or ""))
+                for value in prop.get("value") or prop.get("values") or []:
+                    if not isinstance(value, dict):
+                        continue
+                    url = _sku_image_url(value)
+                    value_name = clean_text(str(value.get("name") or value.get("valueName") or ""))
+                    if not url or not value_name:
+                        continue
+                    entry = {
+                        "url": url,
+                        "sku_id": str(value.get("skuId") or value.get("sku_id") or "").strip(),
+                        "specification": {prop_name: value_name} if prop_name else {},
+                        "source_evidence": "skuModel.skuProps.imageUrl",
+                    }
+                    if entry not in result:
+                        result.append(entry)
     return result
 
 
