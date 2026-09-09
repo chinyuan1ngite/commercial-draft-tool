@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.15 - 2026-09-09
+
+- Mapped per-SKU package weights through the seller logistics spec column when rows expose no SKU id or merchant code.
+- Configured SKU images through the seller row-level add-button picture picker in addition to direct file inputs.
+
 ## 0.4.14 - 2026-09-09
 
 - Collected SKU images from `skuModel.skuProps` sale-property values.
