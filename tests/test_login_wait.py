@@ -18,6 +18,9 @@ class FakeLoginPage:
     def get(self, url):
         self.opened.append(url)
 
+    def handle_alert(self, accept="get", timeout=.2):
+        return False
+
     @property
     def url(self):
         return next(self.urls)
