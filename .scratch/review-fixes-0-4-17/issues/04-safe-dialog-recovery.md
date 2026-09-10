@@ -1,6 +1,6 @@
 # 04: 安全关闭意外弹窗并保护当前页面操作
 
-Status: claimed
+Status: resolved
 Type: bug
 Priority: P1
 Spec: [0.4.17 Code Review 修复规格](../spec.md)
@@ -38,3 +38,11 @@ Review 已在本地 confirm 测试中观察到关闭逻辑返回 true，相当�
 ## Comments
 
 任务已创建，尚未开始实现或执行新的修复验收。
+
+## Answer
+
+2026-09-10：实现提交 271025c，登录测试边界补齐 96024be。未知原生对话统一有界取消，包括导航、填写及保存后恢复；保护当前图片/详情窗口，只触发可见无关关闭控件。探测或取消失败返回受控状态并写 report.json，不再读取阻塞页面截图。采集和类目入口同步处理。
+
+失败到通过：原 confirm fixture 返回 true，修复后 false；新增 probe 异常测试原抛 RuntimeError，现为受控 PopupRecoveryError。DRAFT_BROWSER_TESTS=1 的 test_browser_dom.py 21 项通过（含 5 项真实弹窗场景）；test_browser_actions.py 43 项、test_security_and_collector.py 28 项、test_login_wait.py 3 项、test_category_capture.py 2 项通过；compileall 与 git diff --check 通过。空 alert/prompt、连续弹窗有界停止和当前编辑窗口保留均已在隔离 Chrome/DrissionPage 4.1.1.4 验证。
+
+Review：独立 Standards 审查没有规范/结构问题，另发现保存后旧 accept=True 入口与导航异常吞错，均已修复；Spec 轴由主代理本地复核 AC10/AC11 和调用链，没有剩余已知阻断。不把本地 Spec 复核称为独立子代理审查，真实卖家集成留在任务 07。

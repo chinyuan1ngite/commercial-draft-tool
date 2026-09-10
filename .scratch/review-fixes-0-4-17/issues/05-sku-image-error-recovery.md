@@ -1,6 +1,6 @@
 # 05: 隔离 SKU 图片事务异常并可靠恢复后续填写
 
-Status: claimed
+Status: resolved
 Type: bug
 Priority: P1
 Spec: [0.4.17 Code Review 修复规格](../spec.md)
@@ -41,3 +41,13 @@ Review 通过异常注入确认，控件查找、点击及取得 iframe 位于�
 ## Comments
 
 任务已创建，尚未开始实现或执行新的修复验收。
+
+## Answer
+
+2026-09-10：实现提交 67bf73f，后续审查补齐能力探测边界。每个图片事务记录 SKU、阶段、原始错误、清理结果；查询/点击/iframe/上传/提交/回读异常均被包住。重新按源 SKU ID 或完整命名规格取得带唯一临时标记的当前行，不复用旧行句柄。只清理本事务图片窗口，不移除全局 overlay。
+
+确定失败且页面安全可继续；副作用可能发生但没有确认则标记 indeterminate，不重试、不保存。页面恢复失败同样阻断。必填图片使用统一保存门禁，缺少素材也不能绕过。
+
+失败到通过：控件脱离测试原直接抛异常，现记录 control_lookup 并继续下一 SKU；真实 DOM 的行重建暴露读取/定位竞态，现对无写操作的瞬时替换做有界重新定位。test_sku_image_recovery.py 7 项、test_browser_actions.py 43 项及 test_browser_dom.py -k image 2 项通过。真实 fixture 已执行图片确定失败后的重量 1000g 和可见详情填写，必填门禁仍拒绝；上传/提交未知结果故障测试确认只尝试一次。compileall 与 git diff --check 通过。
+
+Review：本地 Standards/Spec 两轴复核，补齐能力探测异常和禁用图片时跳过探测。未宣称独立子代理审查。图片计数与名称判定仍属已明确的任务 06，不能把本任务提交当作完整媒体正确性修复或可发布版本。

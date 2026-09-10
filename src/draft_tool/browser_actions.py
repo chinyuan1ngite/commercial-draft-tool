@@ -3285,14 +3285,22 @@ def main(argv: list[str] | None = None) -> int:
             "table": {"selected": {"row_count": 0}},
             "rendered": [],
         }
-        sku_capability = probe_sku_image_capability(page) if sku_image_paths else {
-            "supported": False, "scope": "unknown", "controls": [], "row_images": []
-        }
+        try:
+            sku_capability = probe_sku_image_capability(page) if sku_image_paths and not args.no_configure_sku_images else {
+                "supported": False, "scope": "unknown", "controls": [], "row_images": []
+            }
+        except Exception as exc:
+            sku_capability = {"supported": False, "scope": "unknown", "probe_error": f"{type(exc).__name__}: {exc}"}
         report["fields"]["sku_image_capability"] = sku_capability
         if args.no_configure_sku_images and sku_image_paths:
             report["fields"]["sku_images"] = {
                 "status": "disabled", "requested": len(sku_image_paths),
                 "configured": 0, "failed": [], "scope": "sku_row",
+            }
+        elif sku_capability.get("probe_error"):
+            report["fields"]["sku_images"] = {
+                "status": "recovery_failed", "requested": len(sku_image_paths), "configured": 0,
+                "safe_to_continue": False, "failed": [{"stage": "capability_probe", "error": sku_capability["probe_error"]}],
             }
         elif sku_image_paths and not (
             sku_capability.get("supported") and sku_capability.get("scope") == "sku_row"
