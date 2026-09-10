@@ -5,48 +5,68 @@ import time
 from typing import Any
 
 
+class PopupRecoveryError(RuntimeError):
+    """The page remains blocked after bounded dialog recovery."""
+
+
+def _dismiss_native_dialogs(page: Any, limit: int) -> list[str]:
+    dismissed = []
+    for attempt in range(limit + 1):
+        # A non-boolean argument reads the dialog without DrissionPage's
+        # unbounded post-close wait. CDP performs a bounded cancellation.
+        try:
+            text = page.handle_alert(accept="get", timeout=.2)
+        except Exception as exc:
+            raise PopupRecoveryError("native_dialog_probe_failed") from exc
+        if text is False or text is None:
+            return dismissed
+        if attempt == limit:
+            raise PopupRecoveryError("native_dialog_limit_exceeded")
+        try:
+            page.run_cdp("Page.handleJavaScriptDialog", accept=False, _timeout=1)
+        except Exception as exc:
+            raise PopupRecoveryError("native_dialog_cancellation_failed") from exc
+        dismissed.append("native_dialog_cancelled")
+        time.sleep(.05)
+    return dismissed
+
+
 def dismiss_pending_alert(page: Any) -> str | None:
-    """Accept a stale dialog before the next CDP navigation call."""
-    try:
-        text = page.handle_alert(accept=True, timeout=0.5)
-    except Exception:
-        return None
-    return str(text or "").strip() or None
+    """Cancel unknown dialogs before navigating away from a page."""
+    dismissed = _dismiss_native_dialogs(page, 3)
+    return dismissed[-1] if dismissed else None
 
 
 def dismiss_unexpected_popups(page: Any, max_native: int = 3) -> list[str]:
     """Dismiss stale native dialogs and close unrelated seller-page overlays.
 
-    Native alert/confirm/prompt dialogs block the next CDP call until they are
-    accepted, so they are drained before touching the page DOM. Common modal
+    Native dialogs are cancelled before touching the page DOM. Common modal
     close controls are then clicked, except for the picture picker and the
     description schema editor, which may be legitimately open mid-flow.
     """
-    dismissed: list[str] = []
-    for _ in range(max_native):
-        try:
-            text = page.handle_alert(accept=True, timeout=0.2)
-        except Exception:
-            break
-        if not text:
-            break
-        dismissed.append(str(text or "").strip())
+    dismissed = _dismiss_native_dialogs(page, max_native)
     try:
-        page.run_js(
+        closed = page.run_js(
             """
             const active = node =>
               Boolean(node.closest('.ibank-picker-dialog')) ||
-              Boolean(node.closest('.ant-modal')?.querySelector('iframe[src*="schema"]'));
+              Boolean(node.closest('.ant-modal, .next-dialog, .ui-dialog')?.querySelector('iframe.picker-frame, iframe[src*="schema"]'));
+            const visible = node => node.getClientRects().length &&
+              getComputedStyle(node).visibility !== 'hidden' && getComputedStyle(node).display !== 'none';
+            let count = 0;
             Array.from(document.querySelectorAll(
               '.next-dialog-close, .ant-modal-close, .ui-dialog-close, .window-action-close'
             )).forEach(node => {
-              if (!active(node)) node.click();
+              if (visible(node) && !active(node)) { node.click(); count++; }
             });
+            return count;
             """
         )
-    except Exception:
-        pass
-    return [text for text in dismissed if text]
+        if isinstance(closed, int) and closed:
+            dismissed.append(f"unrelated_overlays_closed:{closed}")
+    except Exception as exc:
+        raise PopupRecoveryError("overlay_recovery_failed") from exc
+    return dismissed
 
 
 def is_alert_exists_error(exc: BaseException) -> bool:

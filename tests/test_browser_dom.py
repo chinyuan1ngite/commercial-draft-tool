@@ -3,12 +3,14 @@ import json
 import os
 from pathlib import Path
 import shutil
+import time
 import unittest
 from urllib.parse import quote
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 
 from draft_tool.browser_actions import add_sale_dimensions, fill_package_weights, fill_prop, fill_sku_rows, selected_prop_value
+from draft_tool.browser_navigation import PopupRecoveryError, dismiss_pending_alert, dismiss_unexpected_popups
 
 
 @unittest.skipUnless(os.environ.get("DRAFT_BROWSER_TESTS") == "1", "set DRAFT_BROWSER_TESTS=1")
@@ -208,6 +210,48 @@ class BrowserDomTests(unittest.TestCase):
         result=fill_package_weights(self.page, [{'sku_id':'A','weight_grams':100}, {'sku_id':'A','weight_grams':200}],
                                     source_skus=[{'sku_id':'A','properties':{'Color':'red'}}])
         self.assertEqual(result['status'], 'mapping_ambiguous')
+
+    def test_unexpected_confirmation_is_cancelled(self):
+        self.load('<html><body>dialog fixture</body></html>')
+        self.page.run_js("setTimeout(()=>window.accepted=confirm('Discard changes?'),20)")
+        time.sleep(.1)
+        dismiss_unexpected_popups(self.page)
+        self.assertIs(self.page.run_js('return window.accepted'), False)
+
+    def test_empty_alert_and_prompt_are_dismissed_without_acceptance(self):
+        self.load('<html><body>dialog fixture</body></html>')
+        self.page.run_js("setTimeout(()=>{alert(''); window.answer=prompt(''); window.finished=true;},20)")
+        time.sleep(.1)
+        self.assertEqual(len(dismiss_unexpected_popups(self.page)), 2)
+        self.assertIsNone(self.page.run_js('return window.answer'))
+        self.assertIs(self.page.run_js('return window.finished'), True)
+
+    def test_navigation_recovery_also_cancels_confirmation(self):
+        self.load('<html><body>dialog fixture</body></html>')
+        self.page.run_js("setTimeout(()=>window.accepted=confirm('discard'),20)")
+        time.sleep(.1)
+        dismiss_pending_alert(self.page)
+        self.assertIs(self.page.run_js('return window.accepted'), False)
+
+    def test_continuous_native_dialogs_fail_within_limit(self):
+        self.load('<html><body>dialog fixture</body></html>')
+        self.page.run_js("setTimeout(()=>{for(let i=0;i<4;i++) confirm('discard')},20)")
+        time.sleep(.1)
+        started=time.monotonic()
+        try:
+            with self.assertRaises(PopupRecoveryError):
+                dismiss_unexpected_popups(self.page, max_native=2)
+            self.assertLess(time.monotonic()-started, 4)
+        finally:
+            dismiss_unexpected_popups(self.page, max_native=5)
+
+    def test_overlay_recovery_preserves_active_and_hidden_controls(self):
+        self.load('''<div class="next-dialog"><button class="next-dialog-close" onclick="this.parentNode.remove()">close</button></div>
+          <button class="ant-modal-close" style="display:none" onclick="window.hiddenClicked=true">hidden</button>
+          <div class="ibank-picker-dialog"><button class="next-dialog-close" onclick="window.pickerClosed=true">picker</button></div>
+          <div class="ant-modal"><iframe src="about:blank#schema"></iframe><button class="ant-modal-close" onclick="window.editorClosed=true">editor</button></div>''')
+        self.assertEqual(dismiss_unexpected_popups(self.page), ['unrelated_overlays_closed:1'])
+        self.assertEqual(self.page.run_js('return Boolean(window.hiddenClicked || window.pickerClosed || window.editorClosed)'), False)
 
 
 if __name__ == "__main__":

@@ -135,7 +135,11 @@ class SecurityAndCollectorTests(unittest.TestCase):
                 self.alerts += 1
                 if self.alerts == 1:
                     return "旧页面提示"
-                raise RuntimeError("no alert")
+                return False
+
+            def run_cdp(self, command, **kwargs):
+                assert command == "Page.handleJavaScriptDialog"
+                assert kwargs["accept"] is False
 
             def get(self, url):
                 self.attempts += 1

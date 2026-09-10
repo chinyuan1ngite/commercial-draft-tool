@@ -1,6 +1,6 @@
 # 04: 安全关闭意外弹窗并保护当前页面操作
 
-Status: ready-for-agent
+Status: claimed
 Type: bug
 Priority: P1
 Spec: [0.4.17 Code Review 修复规格](../spec.md)

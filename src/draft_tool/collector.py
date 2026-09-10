@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from .browser_navigation import navigate_with_alert_recovery as _navigate_with_alert_recovery
+from .browser_navigation import PopupRecoveryError, navigate_with_alert_recovery as _navigate_with_alert_recovery
 from .media import specification_contains, specification_key as _specification_key
 
 from .sku_adapter import normalize_sku_model
@@ -1073,7 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
             "saved_to": str(target.resolve()),
         }, ensure_ascii=False, indent=2))
         return 0 if product["validation"]["passed"] else 2
-    except (CollectionError, OSError, ValueError) as exc:
+    except (CollectionError, OSError, ValueError, PopupRecoveryError) as exc:
         print(f"采集失败: {exc}", file=sys.stderr)
         return 1
 

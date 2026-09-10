@@ -1,4 +1,6 @@
 import unittest
+import json
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,8 +22,9 @@ from draft_tool.browser_actions import (
     remove_unrequested_checkbox_values,
     safe_required_attribute_default,
     source_property_map,
+    main,
 )
-from draft_tool.browser_navigation import dismiss_unexpected_popups
+from draft_tool.browser_navigation import PopupRecoveryError, dismiss_unexpected_popups
 
 
 class BrowserActionTests(unittest.TestCase):
@@ -61,19 +64,48 @@ class BrowserActionTests(unittest.TestCase):
 
         dismissed = dismiss_unexpected_popups(page)
 
-        self.assertEqual(dismissed, ["提示"])
+        self.assertEqual(dismissed, ["native_dialog_cancelled"])
+        page.run_cdp.assert_called_once_with("Page.handleJavaScriptDialog", accept=False, _timeout=1)
         self.assertEqual(page.handle_alert.call_count, 2)
         page.run_js.assert_called_once()
 
     def test_unexpected_popup_dismissal_is_safe_without_native_dialog(self):
         page = MagicMock()
-        page.handle_alert.side_effect = Exception("no alert")
+        page.handle_alert.return_value = False
         page.run_js.return_value = None
 
         dismissed = dismiss_unexpected_popups(page)
 
         self.assertEqual(dismissed, [])
         page.run_js.assert_called_once()
+
+    def test_dialog_probe_failure_is_a_controlled_failure(self):
+        page = MagicMock()
+        page.handle_alert.side_effect = RuntimeError("disconnected")
+        with self.assertRaises(PopupRecoveryError):
+            dismiss_unexpected_popups(page)
+        page.run_js.assert_not_called()
+
+    @patch("draft_tool.browser_actions.ChromiumPage")
+    def test_blocked_dialog_writes_report_without_capturing_unsafe_page(self, browser):
+        page = browser.return_value
+        page.handle_alert.side_effect = RuntimeError("disconnected")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "assets").mkdir()
+            (root / "assets" / "main.jpg").write_bytes(b"fixture")
+            product = {"validation": {"passed": True}, "source": {"offer_id": "test"},
+                       "assets": [{"path": "assets/main.jpg", "status": "saved"}]}
+            (root / "product.json").write_text(json.dumps(product), encoding="utf-8")
+            (root / "rules.json").write_text("{}", encoding="utf-8")
+            code = main(["--product", str(root / "product.json"), "--category-rules", str(root / "rules.json"),
+                         "--category-id", "1", "--store-identity-text", "fixture",
+                         "--output-dir", str(root / "report"), "--preview-only"])
+            report = json.loads((root / "report" / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(code, 4)
+            self.assertEqual(report["result"], "blocked_popup_recovery")
+            self.assertFalse(report["draft_save_clicked"])
+            page.get_screenshot.assert_not_called()
 
     def test_sku_image_capability_probe_is_read_only(self):
         page = MagicMock()

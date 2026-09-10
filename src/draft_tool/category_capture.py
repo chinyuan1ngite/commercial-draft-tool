@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 from DrissionPage import ChromiumOptions, ChromiumPage
 
 from .browser_actions import open_seller_page, is_seller_login_url
+from .browser_navigation import PopupRecoveryError
 from .security import atomic_write, profile_lock
 
 
@@ -205,6 +206,12 @@ def main(argv: list[str] | None = None) -> int:
             _write_capture_report(args.output_dir, report)
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report["result"] == "category_captured" else 2
+    except PopupRecoveryError as exc:
+        report["result"] = "blocked_popup_recovery"
+        report["error"] = str(exc)
+        _write_capture_report(args.output_dir, report)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 4
     except RuntimeError as exc:
         report["result"] = "blocked_profile_in_use"
         report["error"] = str(exc)

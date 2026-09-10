@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from DrissionPage import ChromiumOptions, ChromiumPage
 from PIL import Image
 
-from .browser_navigation import dismiss_unexpected_popups, navigate_with_alert_recovery
+from .browser_navigation import PopupRecoveryError, dismiss_unexpected_popups, navigate_with_alert_recovery
 from .media import resolve_sku_image_paths as _resolve_sku_image_paths
 from .media import specification_key
 from .config import DEFAULT_PACKAGE_WEIGHT_GRAMS
@@ -105,6 +105,8 @@ def open_seller_page(
     while True:
         try:
             navigate_with_alert_recovery(page, url)
+        except PopupRecoveryError:
+            raise
         except Exception as exc:
             try:
                 str(page.url)
@@ -3008,6 +3010,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             report["draft_records_before"] = draft_records(page)
             report["draft_snapshot_ok"] = True
+        except PopupRecoveryError:
+            raise
         except Exception:
             report["draft_records_before"] = []
             report["draft_snapshot_ok"] = False
@@ -3066,7 +3070,7 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
         install_publish_guards(page)
-        dismiss_unexpected_popups(page)
+        report.setdefault("popup_recovery", []).extend(dismiss_unexpected_popups(page))
         report["fields"]["title"] = input_value(
             page, "#guid-title input", str(product.get("title") or "")
         )
@@ -3083,7 +3087,7 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["main_images_accepted"] = accepted_image_meta
         report["fields"]["main_images_rejected"] = rejected_images
 
-        dismiss_unexpected_popups(page)
+        report.setdefault("popup_recovery", []).extend(dismiss_unexpected_popups(page))
         source_attrs = product.get("attributes") or {}
         prop_map = source_property_map(page, source_attrs)
         # A collected listing does not always expose every mandatory property
@@ -3183,7 +3187,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "manual_confirmation_required",
             }
 
-        dismiss_unexpected_popups(page)
+        report.setdefault("popup_recovery", []).extend(dismiss_unexpected_popups(page))
         sku_model = normalize_sku_model(product.get("skus") or [])
         report["fields"]["sku_model"] = sku_model
         report["fields"]["sku_dimensions"] = add_sale_dimensions(page, sku_model)
@@ -3347,7 +3351,7 @@ def main(argv: list[str] | None = None) -> int:
         report["fields"]["description_source_images"] = len(source_detail_paths)
         report["fields"]["description_prepared_images"] = prepared_detail_meta
         report["fields"]["description_rejected_images"] = rejected_detail_images
-        dismiss_unexpected_popups(page)
+        report.setdefault("popup_recovery", []).extend(dismiss_unexpected_popups(page))
         try:
             report["fields"]["description"] = fill_description_components(
                 page, product, detail_paths
@@ -3499,7 +3503,7 @@ def main(argv: list[str] | None = None) -> int:
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
-            dismiss_unexpected_popups(page)
+            report.setdefault("popup_recovery", []).extend(dismiss_unexpected_popups(page))
             button = page.ele("css:#saveDraftButton", timeout=5)
             if not button:
                 report["result"] = "save_draft_button_missing"
@@ -3509,6 +3513,7 @@ def main(argv: list[str] | None = None) -> int:
             button.click()
             report["draft_save_clicked"] = True
             time.sleep(10)
+            report.setdefault("popup_recovery", []).extend(dismiss_unexpected_popups(page))
             report["publish_guard_events"] = read_publish_guard_events(page)
             if report["publish_guard_events"]:
                 report["publish_clicked"] = True
@@ -3516,15 +3521,13 @@ def main(argv: list[str] | None = None) -> int:
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
-            try:
-                report["alert_text"] = page.handle_alert(accept=True, timeout=2)
-            except Exception:
-                report["alert_text"] = None
             report["state_after_save"] = inspect_state(page)
             draft_url = str(page.url)
             report["draft_url"] = draft_url if "draftId=" in draft_url else None
             try:
                 report["navigation_alert_text"] = navigate_with_alert_recovery(page, DRAFT_INDEX_URL)
+            except PopupRecoveryError:
+                raise
             except Exception as exc:
                 report["navigation_error"] = {"reason": type(exc).__name__, "message": str(exc)}
                 report["result"] = "draft_saved_navigation_failed"
@@ -3690,6 +3693,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report["result"] in {
             "preview_filled", "draft_saved_and_reopened_verified"
         } else 4
+    except PopupRecoveryError as exc:
+        report["result"] = "blocked_popup_recovery"
+        report["popup_recovery_error"] = str(exc)
+        report["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        report.setdefault("artifact_warnings", []).append("browser_capture_skipped_unsafe_page")
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write(args.output_dir / "report.json", json.dumps(report, ensure_ascii=False, indent=2))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 4
     finally:
         # Keep the user profile intact while closing the automation connection.
         if not args.keep_open:
