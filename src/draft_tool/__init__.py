@@ -1,3 +1,3 @@
 """Commercial, draft-only 1688 publishing workflow."""
 
-__version__ = "0.4.17"
+__version__ = "0.4.19"

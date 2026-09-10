@@ -89,3 +89,19 @@ Red/green: `DRAFT_BROWSER_TESTS=1 python -m unittest discover -s tests -p test_b
 Targeted results: four processed-upload tests (including parameterized invalid-response and pool cases) pass; seven original picker regressions and seven fault-boundary regressions pass. Syntax validation passes. Full integration and independent two-axis review results follow below when complete.
 
 Limitations remain explicit: genuine cross-origin seller-frame behavior, full details/save/reopen and persistent store-scoped reuse between runs have not been accepted. Within one configure call, identical media across SKUs uploads once; report-carried receipts support read-only reopen verification. No claim of persistent ledger idempotency or processed direct-file-input support is made.
+
+Full suite for 5bef5f7: 154 tests passed in 209.553s, including 39 isolated Chrome DOM tests. `compileall -q src tests` and `git diff --check 83d0fc4479e43b680dc95ca114d73f8fa078b711...HEAD` passed. The prior DrissionPage startup ResourceWarning appeared; fixture teardown completed. No seller profile or real seller upload was used.
+
+Independent Standards review: zero definite violations and zero actionable baseline smells. Independent Spec review: one P1 partial requirement remains, AC16 cross-run idempotency; receipt reuse is call-scoped, and a later run may upload the same processed asset again. No new definite wrong-media confirmation or scope creep was identified. Genuine cross-origin capture and full seller acceptance remain unverified. Tasks 06/07 remain incomplete.
+
+The user subsequently authorized packaging a test build. Version 0.4.19 is selected to preserve the existing 0.4.18 package. Packaging does not close the remaining acceptance or persistent-reuse gaps.
+
+### Test Package Validation
+
+- Built with `scripts/build.ps1`, PyInstaller 6.22.2 and Python 3.12.2. The optional DrissionRecord hook warning did not stop the build; new `draft_tool.sku_upload` and `draft_tool.media_verification` modules are present in the archive table.
+- Artifact: `dist/Commercial1688DraftTool-0.4.19-win64.zip`, 29,287,887 bytes.
+- ZIP SHA-256: `3046C8FD7C91DC290CE110BDED51AA281A8545A65AA0A3AD412B80CC96D0932E`.
+- EXE SHA-256: `7B554E50EDBE59B6A291263B9AAECD1A2EA927D205AB70F6488691512D3F51EA`, matched the packaged SHA256SUMS.txt after extraction.
+- Extracted package VERSION and executable smoke output both report 0.4.19. Release notes are present; no settings.local.json, Cookies, Login Data, product.json or run_report.json was included.
+- Extracted executable `--smoke-test` and `--cli --help` both exited 0. DRAFT_TOOL_HOME pointed to an isolated `.local/package-check-0.4.19-d87011ccf5b648ed9f27382d149d3121/smoke-runtime`; no existing user runtime was modified.
+- Existing 0.4.18 versioned artifacts were retained. No real seller upload, save, reopen or publishing was performed.

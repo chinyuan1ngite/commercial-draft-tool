@@ -10,6 +10,8 @@ $releaseDir = Join-Path "dist" $releaseName
 New-Item -ItemType Directory -Path (Join-Path $releaseDir "docs") -Force | Out-Null
 Copy-Item "dist\Commercial1688DraftTool.exe" $releaseDir -Force
 Copy-Item "README.md" $releaseDir -Force
+Copy-Item "VERSION" $releaseDir -Force
+Copy-Item "CHANGELOG.md" $releaseDir -Force
 Copy-Item "docs\*" (Join-Path $releaseDir "docs") -Recurse -Force
 $hash = (Get-FileHash (Join-Path $releaseDir "Commercial1688DraftTool.exe") -Algorithm SHA256).Hash
 Set-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS.txt") -Value "$hash  Commercial1688DraftTool.exe" -Encoding ascii

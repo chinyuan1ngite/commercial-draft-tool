@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.19 - 2026-09-10 (Validation Build)
+
+- Correlated picker upload responses with validated local assets using unique multipart filenames.
+- Verified platform-processed images using the exact media ID and URLs declared by the correlated success response.
+- Confirmed the automatically selected single image before inserting it, rejecting wrong or extra selections.
+- Reused confirmed processed media across SKUs within one run; retained strict content verification for uploads without receipts.
+- Added bounded album lookup and explicit not-started reporting when uncertain SKU media blocks later details/weight stages.
+- Validation: 154 tests passed, including 39 isolated Chrome DOM tests. Real seller-frame upload, full details and save/reopen acceptance remain pending.
+- Known limitation: confirmed receipt reuse is not persisted across runs; repeated runs can upload the same processed asset again. This is a test build, not a stable release.
+
+## 0.4.18 - 2026-09-10 (Validation Build)
+
+- Scoped sales dimensions by label and verified generated SKU combinations.
+- Verified committed attribute values instead of editable search text.
+- Matched weights by complete SKU identity and preserved the 1000g missing-weight fallback.
+- Cancelled unexpected native dialogs with bounded recovery and protected active editors.
+- Contained SKU image transaction errors and blocked saving on uncertain outcomes.
+- Verified SKU image content and row association, including replacement, repeat runs and draft readback.
+- Reused verified picker media across local filenames and allowed recovery from transient content-fetch failures.
+- Known limitation: platform thumbnails, recompression or transcoding can prevent content verification. Live seller save/reopen acceptance remains incomplete; this is not a stable-release certification.
+- Video support and shipping-time configuration remain outside this repair.
+
 ## 0.4.17 - 2026-09-09
 
 - Fixed the SKU image add-button picker to use a valid CSS locator.
