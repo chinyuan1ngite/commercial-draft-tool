@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<div id="guid-description">
+  <button data-click="插图片" id="pictures">Images</button>
+  <button data-click="插文本" id="text">Text</button>
+  <iframe class="new-editor-preview-content" srcdoc="<p>Existing description</p>"></iframe>
+</div>
+<div class="ibank-picker-dialog" hidden><button class="close">Close</button>
+  <iframe class="picker-frame" style="width:700px;height:400px"></iframe>
+</div>
+<div class="ant-modal" hidden></div>
+<script>
+window.setup = options => {
+  window.options = options || {};
+  window.uploads = 0;
+  window.commits = 0;
+  window.textCommits = 0;
+  const dialog = document.querySelector('.ibank-picker-dialog');
+  const picker = document.querySelector('.picker-frame');
+  dialog.querySelector('.close').onclick = () => { dialog.hidden = true; };
+  document.querySelector('#pictures').onclick = () => {
+    dialog.hidden = false;
+    picker.srcdoc = `<!doctype html><meta charset="utf-8">
+      <ul><li class="tab-upload">Upload</li><li class="tab-album">Album</li></ul>
+      <input type="file"><p id="progress"></p><div id="album"></div>
+      <ul class="insert-pool"></ul><div class="ib-footer action">
+      <button class="button submit">Insert</button></div>`;
+    picker.onload = () => {
+      const doc = picker.contentDocument;
+      doc.querySelector('input').onchange = async event => {
+        const file = event.target.files[0];
+        window.uploads++;
+        const addPool = src => {
+          const li = doc.createElement('li');
+          const image = doc.createElement('img'); image.src = src;
+          const remove = doc.createElement('button'); remove.className = 'remove';
+          remove.onclick = () => li.remove();
+          li.append(image, remove); doc.querySelector('.insert-pool').append(li);
+          if (options.extraPool) doc.querySelector('.insert-pool').append(li.cloneNode(true));
+        };
+        if (options.noReceipt) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            doc.querySelector('#progress').textContent = '\u4e0a\u4f20\u6210\u529f 1 \u5f20';
+            const src = options.wrongPool || reader.result;
+            if (options.albumOnly) {
+              const link = doc.createElement('a'); link.title = file.name;
+              const img = doc.createElement('img'); img.src = src; link.append(img);
+              link.onclick = () => addPool(src); doc.querySelector('#album').append(link);
+            } else addPool(src);
+          };
+          reader.readAsDataURL(file);
+          return;
+        }
+        const form = new FormData();
+        form.append('file', file, options.wrongFilename ? 'other.png' : file.name);
+        const response = await picker.contentWindow.fetch(
+          'https://picman.1688.com/album/ajax/image_upload_ajax.json?_input_charset=UTF-8',
+          {method: 'POST', body: form});
+        const receipt = await response.json();
+        doc.querySelector('#progress').textContent = '\u4e0a\u4f20\u6210\u529f 1 \u5f20';
+        const src = options.wrongPool || receipt.miniImgUrls[0];
+        addPool(src);
+      };
+      doc.querySelector('.submit').onclick = () => {
+        window.commits++;
+        if (options.noPreview) return;
+        const target = document.querySelector('.new-editor-preview-content').contentDocument.body;
+        const img = doc.querySelector('.insert-pool img').cloneNode();
+        if (options.wrongPreview) img.src = options.wrongPreview;
+        if (options.replacePreview) target.replaceChildren(img); else target.append(img);
+        dialog.hidden = true;
+      };
+    };
+  };
+  document.querySelector('#text').onclick = () => {
+    const modal = document.querySelector('.ant-modal'); modal.hidden = false;
+    modal.replaceChildren();
+    const editor = document.createElement('iframe');
+    editor.src = 'about:blank#schema/1829';
+    editor.srcdoc = '<div class="item" title="点击插入文字">Text</div><div class="ql-editor" contenteditable="true"></div><button class="ant-btn-primary">Save</button>';
+    modal.append(editor);
+    editor.onload = () => {
+      editor.contentDocument.querySelector('button').onclick = () => {
+        window.textCommits++;
+        document.querySelector('.new-editor-preview-content').contentDocument.body.innerHTML =
+          editor.contentDocument.querySelector('.ql-editor').innerHTML;
+        modal.hidden = true;
+      };
+    };
+  };
+};
+</script>

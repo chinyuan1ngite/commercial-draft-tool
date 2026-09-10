@@ -17,6 +17,7 @@ from PIL import Image
 from draft_tool.browser_actions import add_sale_dimensions, fill_package_weights, fill_prop, fill_sku_rows, selected_prop_value
 from draft_tool.browser_navigation import PopupRecoveryError, dismiss_pending_alert, dismiss_unexpected_popups
 from draft_tool.browser_actions import configure_sku_images, sku_image_block_reason, fill_legacy_description_editor, verify_sku_images
+from draft_tool.browser_actions import insert_detail_images, fill_description_components, preview_result, description_block_reason
 
 
 @unittest.skipUnless(os.environ.get("DRAFT_BROWSER_TESTS") == "1", "set DRAFT_BROWSER_TESTS=1")
@@ -453,15 +454,22 @@ class BrowserDomTests(unittest.TestCase):
                 self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
 
     @contextmanager
-    def processed_upload_fixture(self, options=None, response_changes=None, skus=None):
+    def processed_upload_fixture(self, options=None, response_changes=None, skus=None, sequence=False):
         processed, _ = self.image_data('pink')
         original = 'https://cbu01.alicdn.com/img/ibank/test-processed.jpg'
         thumbnail = 'https://cbu01.alicdn.com/img/ibank/test-processed.summ.jpg'
         response = {'result': 'success', 'imgUrls': [original], 'miniImgUrls': [thumbnail], 'dataList': [59814487060]}
         response.update(response_changes or {})
         self.image_fixture({'networkUpload': True, **(options or {})}, skus=skus)
+        upload_number = 0
         def fulfill(**event):
+            nonlocal upload_number
             url = event['request']['url']
+            if sequence and url.startswith('https://picman.1688.com/'):
+                upload_number += 1
+                response.update(imgUrls=[f'https://cbu01.alicdn.com/img/ibank/test-{upload_number}.jpg'],
+                    miniImgUrls=[f'https://cbu01.alicdn.com/img/ibank/test-{upload_number}.summ.jpg'],
+                    dataList=[upload_number])
             content = json.dumps(response).encode() if url.startswith('https://picman.1688.com/') else processed
             self.page.run_cdp('Fetch.fulfillRequest', requestId=event['requestId'], responseCode=200,
                 responseHeaders=[{'name': 'Content-Type', 'value': 'application/json' if url.startswith('https://picman.') else 'image/png'},
@@ -489,6 +497,115 @@ class BrowserDomTests(unittest.TestCase):
             _, wrong = self.image_data('blue')
             self.page.run_js('document.querySelector("tr img").src=arguments[0]', wrong)
             self.assertFalse(verify_sku_images(self.page, [{'sku_id': 'A'}], result)['verified'])
+
+    def detail_fixture(self, options=None):
+        self.load((Path(__file__).parent / 'fixtures/detail-images.html').read_text(encoding='utf-8'))
+        self.page.run_js('window.setup(JSON.parse(arguments[0]))', json.dumps(options or {}))
+
+    def test_detail_upload_inserts_processed_auto_selection_without_album_record(self):
+        data, _ = self.image_data('red')
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture()
+            path = Path(folder) / 'long-detail-page-name-0123456789.png'
+            path.write_bytes(data)
+            result = insert_detail_images(self.page, [path])
+            self.assertEqual(result['inserted'], 1, result)
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
+            self.assertEqual(self.page.run_js('return document.querySelector(".new-editor-preview-content").contentDocument.images.length'), 1)
+
+    def test_detail_text_success_with_missing_images_is_not_complete(self):
+        data, _ = self.image_data('red')
+        _, wrong = self.image_data('blue')
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture({'wrongPool': wrong})
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(data)
+            result = fill_description_components(self.page, {'title': 'Description text'}, [path])
+            self.assertFalse(result['saved'], result)
+            self.assertTrue(result['text_saved'])
+            self.assertEqual(result['images']['status'], 'indeterminate')
+            self.assertFalse(result['retry_allowed'])
+            self.assertEqual(preview_result({}, {'description': result,
+                'package_dimensions': {'status': 'filled'}}, {}), 'preview_partial')
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits,window.textCommits]'), [1, 0, 1])
+
+    def test_detail_without_receipt_verifies_original_bytes_from_album(self):
+        data, _ = self.image_data('red')
+        self.detail_fixture({'noReceipt': True, 'albumOnly': True})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(data)
+            result = insert_detail_images(self.page, [path])
+            self.assertEqual(result['inserted'], 1, result)
+            self.assertEqual(result['status'], 'confirmed')
+
+    def test_detail_components_confirm_two_images_in_source_order(self):
+        with self.processed_upload_fixture(sequence=True), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture()
+            paths = [Path(folder) / 'first.png', Path(folder) / 'second.png']
+            for path, color in zip(paths, ('red', 'blue')):
+                path.write_bytes(self.image_data(color)[0])
+            result = fill_description_components(self.page, {'title': 'Description text'}, paths)
+            self.assertTrue(result['saved'], result)
+            self.assertTrue(result['text_saved'])
+            self.assertEqual(result['images']['inserted'], 2)
+            self.assertIsNone(description_block_reason(result))
+            self.assertEqual(self.page.run_js('return [...document.querySelector(".new-editor-preview-content").contentDocument.images].map(i=>i.src)'),
+                ['https://cbu01.alicdn.com/img/ibank/test-1.summ.jpg',
+                 'https://cbu01.alicdn.com/img/ibank/test-2.summ.jpg'])
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits,window.textCommits]'), [2, 2, 1])
+
+    def test_detail_rejects_wrong_extra_pool_and_unrelated_receipt_without_next_upload(self):
+        _, wrong = self.image_data('blue')
+        for options, reason in (
+            ({'wrongPool': wrong}, 'detail_selection_pool_identity_mismatch'),
+            ({'extraPool': True}, 'detail_selection_pool_identity_mismatch'),
+            ({'wrongFilename': True}, 'sku_upload_request_identity_unconfirmed'),
+        ):
+            with self.subTest(options=options), self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+                self.detail_fixture(options)
+                paths = [Path(folder) / 'first.png', Path(folder) / 'second.png']
+                for path in paths:
+                    path.write_bytes(self.image_data('red')[0])
+                result = insert_detail_images(self.page, paths)
+                self.assertEqual(result['status'], 'indeterminate', result)
+                self.assertEqual(result['batches'][0]['error_message'], reason)
+                self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
+                self.assertEqual(description_block_reason({'saved': False, 'images': result}),
+                                 'blocked_indeterminate_description')
+
+    def test_detail_rejects_wrong_preview_even_when_image_count_increases(self):
+        _, wrong = self.image_data('blue')
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture({'wrongPreview': wrong})
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(self.image_data('red')[0])
+            result = insert_detail_images(self.page, [path])
+            self.assertEqual(result['status'], 'indeterminate', result)
+            self.assertEqual(result['inserted'], 0)
+            self.assertEqual(result['batches'][0]['error_message'], 'detail_preview_identity_unconfirmed')
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
+
+    def test_detail_insertion_preserves_existing_preview_image(self):
+        _, original = self.image_data('green')
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture()
+            self.page.run_js('const i=document.createElement("img");i.src=arguments[0];document.querySelector(".new-editor-preview-content").contentDocument.body.append(i)', original)
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(self.image_data('red')[0])
+            result = insert_detail_images(self.page, [path])
+            self.assertEqual(result['status'], 'confirmed', result)
+            self.assertEqual(self.page.run_js('return document.querySelector(".new-editor-preview-content").contentDocument.images[0].src'), original)
+
+    def test_detail_without_receipt_rejects_wrong_original_bytes(self):
+        _, wrong = self.image_data('blue')
+        self.detail_fixture({'noReceipt': True, 'wrongPool': wrong})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(self.image_data('red')[0])
+            result = insert_detail_images(self.page, [path])
+            self.assertEqual(result['status'], 'indeterminate', result)
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
 
     def test_processed_upload_rejects_unrelated_request_and_ambiguous_response(self):
         data, _ = self.image_data('red')

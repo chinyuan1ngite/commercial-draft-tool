@@ -1,9 +1,23 @@
 import unittest
 
-from draft_tool.browser_actions import record_sku_image_block
+from draft_tool.browser_actions import record_sku_image_block, description_block_reason, preview_result
 
 
 class MediaStageReportTests(unittest.TestCase):
+    def test_partial_detail_does_not_pass_preview_or_save_gate(self):
+        description = {'saved': True, 'text_saved': True,
+                       'images': {'requested': 2, 'inserted': 1, 'status': 'partial'}}
+        self.assertEqual(description_block_reason(description), 'blocked_incomplete_description')
+        self.assertEqual(preview_result({}, {'description': description,
+            'package_dimensions': {'status': 'filled'}}, {}), 'preview_partial')
+
+    def test_confirmed_detail_passes_preview_and_save_gate(self):
+        description = {'saved': True, 'text_saved': True,
+                       'images': {'requested': 2, 'inserted': 2, 'status': 'confirmed'}}
+        self.assertIsNone(description_block_reason(description))
+        self.assertEqual(preview_result({}, {'description': description,
+            'package_dimensions': {'status': 'filled'}}, {}), 'preview_filled')
+
     def test_indeterminate_image_marks_unstarted_detail_and_weight(self):
         report = {'fields': {}}
         reason = record_sku_image_block(report, {'indeterminate': True, 'safe_to_continue': True})

@@ -1809,104 +1809,139 @@ def fill_default_package_weight(page: ChromiumPage, weight_grams: int) -> dict[s
 def insert_detail_images(
     page: ChromiumPage, paths: list[Path], allow_retry: bool = True
 ) -> dict[str, Any]:
-    """Upload and insert detail images through the editor's image component."""
-    result: dict[str, Any] = {"requested": len(paths), "inserted": 0, "batches": []}
-    # One image per picker transaction avoids the editor dropping part of an
-    # asynchronously inserted multi-image batch.
+    """Insert one verified image per transaction; never retry uncertain writes."""
+    result: dict[str, Any] = {"requested": len(paths), "inserted": 0, "batches": [],
+                              "status": "pending", "indeterminate": False}
+    cache: dict[str, str | None] = {}
     for path in paths:
-        batch = [path] if path.exists() else []
-        batch_result: dict[str, Any] = {
-            "files": [path.name for path in batch], "uploaded": False, "selected": 0, "submitted": False
-        }
+        batch_result: dict[str, Any] = {"files": [path.name], "uploaded": False,
+            "selected": 0, "submitted": False, "side_effect_possible": False, "stage": "prepare"}
         result["batches"].append(batch_result)
-        if not batch:
-            continue
+        owned = False
         try:
-            preview_before = _description_preview_image_count(page)
-            batch_result["preview_before"] = preview_before
+            with path.open('rb') as source:
+                data = source.read(MAX_IMAGE_BYTES + 1)
+            if not data or len(data) > MAX_IMAGE_BYTES:
+                raise RuntimeError('invalid_detail_asset_size')
+            digest = hashlib.sha256(data).hexdigest()
+            batch_result['sha256'] = digest
+            before = _detail_preview(page)
+            batch_result['preview_before'] = len(before['images'])
+            if not before['available']:
+                raise RuntimeError('detail_preview_unavailable')
+            if page.run_js("return [...document.querySelectorAll('.ibank-picker-dialog')].some(e => e.getClientRects().length)"):
+                raise RuntimeError('another_picker_is_active')
             trigger = page.ele('css:#guid-description button[data-click="插图片"]', timeout=4)
             if not trigger:
-                break
+                raise RuntimeError('detail_picker_control_unavailable')
+            owned = True
             trigger.click()
-            time.sleep(1.5)
             frame = page.get_frame("css:iframe.picker-frame", timeout=5)
             if not frame:
-                break
+                raise RuntimeError('detail_picker_frame_unavailable')
             batch_result["pool_cleared"] = _picker_clear_pool(frame)
             frame.run_js("document.querySelector('li.tab-album')?.click();")
-            time.sleep(.8)
-            record: dict[str, str] | None = None
-            existing_deadline = time.time() + 3
-            while time.time() < existing_deadline and not record:
-                records = _picker_image_records(frame, [path.stem])
-                record = records[0] if records else None
-                if not record:
-                    time.sleep(.4)
-            if not record:
+            _picker_search_title(frame, path.stem[:20])
+            candidate = _verified_sku_candidate(frame, path.stem, digest, cache)
+            receipt = None
+            candidate_selected = False
+            if candidate is None:
                 frame.run_js("document.querySelector('li.tab-upload')?.click();")
-                time.sleep(.5)
                 file_input = frame.ele('css:input[type="file"]', timeout=3)
                 if not file_input:
-                    raise RuntimeError("detail upload input unavailable")
-                previous_count = _picker_upload_success_count(frame)
-                file_input.input(str(path.resolve()))
-                deadline = time.time() + 20
-                while time.time() < deadline and _picker_upload_success_count(frame) <= previous_count:
-                    time.sleep(.4)
-                if _picker_upload_success_count(frame) <= previous_count:
-                    raise RuntimeError("detail upload did not report a new success")
-                batch_result["uploaded_files"] = [path.name]
-                frame.run_js("document.querySelector('li.tab-album')?.click();")
-                time.sleep(.8)
-                visible_deadline = time.time() + 15
-                while time.time() < visible_deadline and not record:
-                    records = _picker_image_records(frame, [path.stem])
-                    record = records[0] if records else None
-                    if not record:
-                        time.sleep(.5)
-                if not record:
-                    raise RuntimeError("detail image not visible in album")
-            pool_records = _picker_pool_records(frame)
-            already_staged = any(
-                (record.get("src") and item.get("src") == record.get("src"))
-                or (record.get("title") and item.get("title") == record.get("title"))
-                for item in pool_records
-            )
-            if not already_staged:
-                before_pool = _picker_pool_count(frame)
-                clicked = _picker_select_titles(frame, [record["title"]])
-                deadline = time.time() + 4
-                after_pool = before_pool
-                while time.time() < deadline and after_pool <= before_pool and clicked:
-                    time.sleep(.25)
-                    after_pool = _picker_pool_count(frame)
-                if after_pool <= before_pool:
-                    raise RuntimeError("detail image was not added to selection pool")
-            batch_result["selected"] = _picker_pool_count(frame)
-            batch_result["record"] = record
-            batch_result["uploaded"] = bool(batch_result.get("uploaded_files")) or "reused"
+                    raise RuntimeError('detail_upload_input_unavailable')
+                receipt = upload_with_receipt(frame, file_input, path, digest, batch_result,
+                                              _picker_upload_success_count)
+                batch_result['upload_receipt'] = receipt
+                batch_result['uploaded'] = bool(receipt)
+            else:
+                batch_result['reused'] = True
+                _select_detail_candidate(frame, candidate)
+                candidate_selected = True
+            batch_result['stage'] = 'selection'
+            deadline = time.monotonic() + 8
+            while True:
+                pool = _picker_pool_records(frame)
+                if len(pool) > 1:
+                    raise RuntimeError('detail_selection_pool_identity_mismatch')
+                if pool and pool[0].get('loaded'):
+                    if not verified_image(pool[0], digest, cache, receipt):
+                        raise RuntimeError('detail_selection_pool_identity_mismatch')
+                    break
+                if not pool and not receipt and not candidate_selected:
+                    frame.run_js("document.querySelector('li.tab-album')?.click();")
+                    title = Path(batch_result.get('upload_filename') or path.name).stem
+                    _picker_search_title(frame, title[:20])
+                    candidate = _verified_sku_candidate(frame, title, digest, cache, deadline=deadline)
+                    if candidate:
+                        _select_detail_candidate(frame, candidate)
+                        candidate_selected = True
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('detail_selection_pool_unconfirmed')
+                time.sleep(.1)
+            batch_result['selected'] = 1
+            batch_result['record'] = pool[0]
+            batch_result.update(stage='submit', side_effect_possible=True)
             batch_result["submitted"] = _picker_submit(frame)
-            if batch_result["submitted"]:
-                deadline = time.time() + 10
-                while time.time() < deadline:
-                    if _description_preview_image_count(page) > preview_before:
-                        break
-                    time.sleep(.5)
-                preview_after = _description_preview_image_count(page)
-                batch_result["preview_after"] = preview_after
-                result["inserted"] += max(0, preview_after - preview_before)
+            if not batch_result['submitted']:
+                raise RuntimeError('detail_submit_unconfirmed')
+            batch_result['stage'] = 'readback'
+            deadline = time.monotonic() + 10
+            while True:
+                after = _detail_preview(page)
+                unchanged = (after['available'] and after['text'] == before['text']
+                    and [item['src'] for item in after['images'][:-1]] == [item['src'] for item in before['images']])
+                if (unchanged and len(after['images']) == len(before['images']) + 1
+                        and verified_image(after['images'][-1], digest, cache, receipt)):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('detail_preview_identity_unconfirmed')
+                time.sleep(.2)
+            batch_result.update(status='confirmed', stage='confirmed', preview_after=len(after['images']))
+            result['inserted'] += 1
         except Exception as exc:
             batch_result["error"] = type(exc).__name__
-            batch_result["error_message"] = str(exc)
+            batch_result["error_message"] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+            batch_result['status'] = 'indeterminate' if batch_result['side_effect_possible'] else 'failed'
         finally:
-            try:
-                page.run_js("""
-                  document.querySelector('.ibank-picker-dialog .close')?.click();
-                  document.querySelector('.ui-dialog-overlay')?.remove();
-                """)
-            except Exception:
-                pass
+            if owned:
+                try:
+                    _close_sku_picture_picker(page)
+                except Exception:
+                    batch_result.update(status='indeterminate', cleanup_error='detail_picker_cleanup_unconfirmed')
+        if batch_result['status'] != 'confirmed':
+            result['indeterminate'] = batch_result['status'] == 'indeterminate'
+            break
+    result['status'] = ('indeterminate' if result['indeterminate'] else
+                        'confirmed' if result['inserted'] == len(paths) else 'partial')
     return result
+
+
+def _select_detail_candidate(frame: Any, candidate: dict[str, Any]) -> None:
+    clicked = frame.run_js("""
+        const record = JSON.parse(arguments[0]);
+        const node = document.querySelector('[data-codex-image-choice="' + record.token + '"]');
+        if (!node || node.querySelector('img')?.src !== record.src) return false;
+        node.click(); return true;
+    """, json.dumps(candidate))
+    if not clicked:
+        raise RuntimeError('detail_candidate_replaced')
+
+
+def _detail_preview(page: ChromiumPage) -> dict[str, Any]:
+    return page.run_js("""
+        const frames = [...document.querySelectorAll('#guid-description iframe.new-editor-preview-content')]
+          .filter(frame => frame.getClientRects().length);
+        const empty = {available: false, text: '', images: []};
+        if (frames.length !== 1) return empty;
+        try {
+          const body = frames[0].contentDocument?.body;
+          if (!body) return empty;
+          return {available: true, text: body.innerText,
+            images: [...body.querySelectorAll('img')].map(img => ({src: img.src,
+              loaded: img.complete && img.naturalWidth > 0}))};
+        } catch (error) { return empty; }
+    """)
 
 
 def fill_legacy_description_editor(
@@ -1972,7 +2007,8 @@ def fill_description_components(
     page: ChromiumPage, product: dict[str, Any], detail_paths: list[Path]
 ) -> dict[str, Any]:
     """Use the new editor's actual text component and persist it via its iframe."""
-    result: dict[str, Any] = {"text_component": False, "saved": False, "preview": ""}
+    result: dict[str, Any] = {"text_component": False, "text_saved": False,
+                            "saved": False, "retry_allowed": True, "preview": ""}
     button = page.ele('css:#guid-description button[data-click="插文本"]', timeout=3)
     if not button:
         return result
@@ -2056,6 +2092,9 @@ def fill_description_components(
     save = frame.ele('css:button.ant-btn-primary', timeout=3)
     if not save:
         return result
+    # Once the component save is attempted, repeating the whole description
+    # could duplicate text or images even if the iframe disappears mid-click.
+    result['retry_allowed'] = False
     save.click()
     time.sleep(1)
     confirmed = bool(page.run_js(
@@ -2070,12 +2109,17 @@ def fill_description_components(
     if confirmed:
         time.sleep(1)
     result["text_component"] = True
-    result["saved"] = True
+    preview = _detail_preview(page)
+    result['preview'] = preview['text']
+    result['text_saved'] = bool(preview['available'] and _compact_text(detail_text)
+                                and _compact_text(detail_text) in _compact_text(preview['text']))
+    if not result['text_saved']:
+        result['status'] = 'text_commit_unconfirmed'
+        return result
     result["images"] = insert_detail_images(page, detail_paths)
     result["images"]["preview_count"] = _description_preview_image_count(page)
-    result["preview"] = str(page.run_js(
-        "return document.querySelector('#guid-description iframe.new-editor-preview-content')?.contentDocument?.body?.innerText || '';"
-    ) or "").strip()
+    result['saved'] = result['images']['status'] == 'confirmed'
+    result['status'] = 'confirmed' if result['saved'] else result['images']['status']
     return result
 
 
@@ -2992,9 +3036,24 @@ def preview_result(
     )
     if not sku_valid or not quotation_valid or _page_validation_errors(state, allow_deferred_delivery=True):
         return "preview_invalid"
+    if fields.get('description') is not None and description_block_reason(fields['description']):
+        return 'preview_partial'
     if fields.get("package_dimensions", {}).get("status") not in {"filled", "skipped"}:
         return "preview_partial"
     return "preview_filled"
+
+
+def description_block_reason(description: dict[str, Any]) -> str | None:
+    """Shared preview/save gate for text commitment and detail image results."""
+    images = description.get('images') or {}
+    if images.get('indeterminate'):
+        return 'blocked_indeterminate_description'
+    if images and (images.get('requested', 0) != images.get('inserted', 0)
+                   or images.get('status', 'confirmed') != 'confirmed'):
+        return 'blocked_incomplete_description'
+    if not description.get('saved'):
+        return 'blocked_empty_description'
+    return None
 
 
 def inspect_state(page: ChromiumPage) -> dict[str, Any]:
@@ -3624,7 +3683,8 @@ def main(argv: list[str] | None = None) -> int:
             report["fields"]["description"] = fill_description_components(
                 page, product, detail_paths
             )
-            if not report["fields"]["description"].get("saved"):
+            if (not report["fields"]["description"].get("saved")
+                    and report["fields"]["description"].get('retry_allowed', True)):
                 # The editor iframe can be replaced by the page after an
                 # upload/attribute update. Close any half-open dialog and give
                 # the editor one clean second attempt before declaring the
@@ -3637,7 +3697,8 @@ def main(argv: list[str] | None = None) -> int:
                 report["fields"]["description_retry"] = fill_description_components(
                     page, product, detail_paths
                 )
-                if report["fields"]["description_retry"].get("saved"):
+                if (report["fields"]["description_retry"].get("saved")
+                        or not report["fields"]["description_retry"].get('retry_allowed', True)):
                     report["fields"]["description"] = report["fields"]["description_retry"]
                 else:
                     # Last-resort same-page editor path. This avoids treating
@@ -3660,8 +3721,16 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(3)
         report["fields"]["description"]["state_before_save"] = inspect_description_state(page)
         report["state_before_save"] = inspect_state(page)
+        detail_block = description_block_reason(report['fields']['description'])
+        if detail_block:
+            report.setdefault('warnings', []).append('商品图文详情未完整确认: ' + detail_block)
 
         if args.save_draft:
+            if detail_block:
+                report['result'] = detail_block
+                save_artifacts(page, args.output_dir, report)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 4
             delivery_control_required = bool(page.run_js(
                 """
                 const row = document.querySelector('#guid-buyerProtection tbody tr');
