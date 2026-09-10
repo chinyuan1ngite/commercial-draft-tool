@@ -52,3 +52,9 @@ Acceptance: AC01, AC02, AC03, AC04, AC05, AC06, AC07, AC08, AC09, AC10, AC11, AC
 ## Comments
 
 任务已创建，等待任务 01-06 完成。尚未执行新的集成验收，也不表示当前版本已满足稳定发布条件。
+
+### 2026-09-10 Dependency And Environment Check
+
+01-05 已 resolved；06 已有内容身份修复及 fixture 回归，但平台派生图兼容尚未获得真实证据，仍 claimed，因此不越过依赖启动/完成本任务。实现中的全量回归已运行，详细记录见 [verification.md](../verification.md)。
+
+当前真实页面验收受阻：浏览器控制返回 `Codex auth token is unavailable`；本地运行配置没有目标类目、店铺识别及发货时间。未执行真实保存/重开，不能确认可见详情编辑器是否仍受独立故障影响。没有正式发布、升版或打包。需恢复可用卖家浏览器连接，提供已有有效配置的验收环境后继续。

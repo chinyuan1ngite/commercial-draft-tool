@@ -248,6 +248,7 @@ def configure_sku_images(
     if not sku_image_paths:
         return result
     verification_cache: dict[str, str | None] = {}
+    platform_images: dict[str, dict[str, str]] = {}
     for source_index, source in enumerate(source_skus):
         sku_id = str(source.get("sku_id") or "").strip()
         path = sku_image_paths.get(sku_id) or sku_image_paths.get(
@@ -264,7 +265,8 @@ def configure_sku_images(
             row = _resolve_sku_image_row(page, source_skus, source_index)
             transaction["stage"] = "control_lookup"
             file_input = row.ele('css:input[type="file"]', timeout=1)
-            if not file_input and not row.ele('css:.sku-picture-content, .sku-picture-url', timeout=0):
+            existing = _sku_row_image_records(row)
+            if not existing and not file_input and not row.ele('css:.sku-picture-content, .sku-picture-url', timeout=0):
                 raise RuntimeError("sku_image_control_missing")
             transaction["stage"] = "media_validation"
             with path.open('rb') as media_file:
@@ -276,7 +278,6 @@ def configure_sku_images(
             if media_ref.startswith("sha256:") and media_ref != f"sha256:{digest}":
                 raise RuntimeError("local_media_identity_mismatch")
             transaction.update(media_ref=media_ref, sha256=digest)
-            existing = _sku_row_image_records(row)
             already_correct = len(existing) == 1 and verified_image(existing[0], digest, verification_cache)
             if already_correct:
                 transaction["reused"] = True
@@ -284,7 +285,7 @@ def configure_sku_images(
                 transaction["stage"] = "upload"
                 transaction["side_effect_possible"] = True
                 file_input.input(str(path.resolve()))
-            elif not _configure_sku_image_via_picker(page, row, path, transaction, verification_cache):
+            elif not _configure_sku_image_via_picker(page, row, path, transaction, verification_cache, platform_images):
                 raise RuntimeError("picker_image_control_failed")
             transaction["stage"] = "readback"
             deadline = time.monotonic() + 8
@@ -470,6 +471,7 @@ def _verified_sku_candidate(frame: Any, title: str, digest: str, cache: dict[str
 def _configure_sku_image_via_picker(
     page: ChromiumPage, row: Any, path: Path, transaction: dict[str, Any],
     verification_cache: dict[str, str | None],
+    platform_images: dict[str, dict[str, str]],
 ) -> bool:
     """Upload or select one SKU image through the row-level picture picker."""
     add_button = row.ele('css:.sku-picture-content, .sku-picture-url', timeout=2)
@@ -488,10 +490,14 @@ def _configure_sku_image_via_picker(
         return False
     transaction["stage"] = "selection"
     _picker_clear_pool(frame)
-    if _picker_search_title(frame, path.stem):
-        time.sleep(.7)
     digest = transaction["sha256"]
-    candidate = _verified_sku_candidate(frame, path.stem, digest, verification_cache)
+    known_image = platform_images.get(digest)
+    candidate_title = known_image["title"] if known_image else path.stem
+    if _picker_search_title(frame, candidate_title):
+        time.sleep(.7)
+    candidate = _verified_sku_candidate(frame, candidate_title, digest, verification_cache)
+    if candidate is None and known_image:
+        raise RuntimeError("confirmed_platform_image_not_available")
     if candidate is None:
         frame.run_js("document.querySelector('li.tab-upload')?.click();")
         time.sleep(.7)
@@ -517,6 +523,7 @@ def _configure_sku_image_via_picker(
             raise RuntimeError("uploaded_media_identity_unconfirmed")
     else:
         transaction["reused"] = True
+    platform_images[digest] = candidate
     transaction["stage"] = "selection"
     _picker_clear_pool(frame)
     selected = frame.run_js("""

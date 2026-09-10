@@ -40,3 +40,15 @@ class MediaVerificationTests(unittest.TestCase):
 
     def test_oversized_inline_image_is_rejected(self):
         self.assertFalse(verified_image({'src':'data:image/png;base64,'+'A'*(MAX_IMAGE_BYTES*4//3+8)},'x',{}))
+
+    @patch('draft_tool.security.build_opener')
+    def test_temporary_network_failure_can_recover_on_next_readback(self, opener):
+        response=MagicMock()
+        response.geturl.return_value='https://cbu01.alicdn.com/sku.png'
+        response.headers={'Content-Type':'image/png'}
+        response.read.return_value=b'expected'
+        manager=MagicMock(); manager.__enter__.return_value=response
+        opener.return_value.open.side_effect=[TimeoutError('processing'),manager]
+        cache={}; record={'src':response.geturl.return_value}; digest=hashlib.sha256(b'expected').hexdigest()
+        self.assertFalse(verified_image(record,digest,cache))
+        self.assertTrue(verified_image(record,digest,cache))

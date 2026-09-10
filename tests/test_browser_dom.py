@@ -301,6 +301,16 @@ class BrowserDomTests(unittest.TestCase):
         self.assertEqual(result['status'], 'confirmed', result)
         self.assertFalse(self.page.run_js('return Boolean(window.uploaded)'))
 
+    def test_correct_existing_image_does_not_require_upload_control(self):
+        data, correct = self.image_data('red')
+        self.image_fixture({}, skus=['A'])
+        self.page.run_js('window.commit("A",[arguments[0]]);document.querySelector("tr button").remove()', correct)
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'pixel.png'; path.write_bytes(data)
+            result=configure_sku_images(self.page,[{'sku_id':'A'}],{'A':path})
+        self.assertEqual(result['status'],'confirmed',result)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'),[0,0])
+
     def image_fixture(self, options, records=None, skus=None):
         self.load((Path(__file__).parent / 'fixtures/sku-images.html').read_text(encoding='utf-8'))
         self.page.run_js('window.setup(...JSON.parse(arguments[0]))', json.dumps([options, records or [], skus or ['A']]))
@@ -385,6 +395,17 @@ class BrowserDomTests(unittest.TestCase):
         self.assertEqual(result['status'],'unsupported',result)
         self.assertEqual(result['failed'][0]['reason'],'selection_pool_identity_mismatch')
         self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'),[0,0])
+
+    def test_picker_reuses_same_content_across_different_source_filenames(self):
+        data, correct=self.image_data('red')
+        self.image_fixture({},skus=['A','B'])
+        with tempfile.TemporaryDirectory() as folder:
+            first=Path(folder)/'first.png'; first.write_bytes(data)
+            second=Path(folder)/'second.png'; second.write_bytes(data)
+            result=configure_sku_images(self.page,[{'sku_id':'A'},{'sku_id':'B'}],{'A':first,'B':second})
+        self.assertEqual(result['status'],'confirmed',result)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'),[1,2])
+        self.assertEqual(self.page.run_js('return [...document.querySelectorAll("tr img")].map(e=>e.src)'),[correct,correct])
 
 
 if __name__ == "__main__":

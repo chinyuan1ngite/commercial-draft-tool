@@ -29,5 +29,7 @@ def verified_image(record: dict[str, Any], digest: str, cache: dict[str, str | N
                 return False
             cache[src] = hashlib.sha256(data).hexdigest()
         except Exception:
-            cache[src] = None
+            # A processing URL can briefly be unavailable. The caller's bounded
+            # readback loop may retry it; only actual content is cacheable.
+            return False
     return cache.get(src) == digest
