@@ -1006,15 +1006,22 @@ def selected_prop_value(page: ChromiumPage, prop_id: str) -> str:
         """
         const box = document.querySelector(`[cat-prop-id="${arguments[0]}"]`);
         if (!box) return '';
+        const native = box.querySelector('select');
+        if (native) return [...native.selectedOptions].filter(option => option.value).map(option => option.text.trim()).join(',');
         const tags = Array.from(box.querySelectorAll('.next-tag-body, .ant-select-selection-item'))
           .map(node => (node.innerText || node.textContent || '').trim())
           .filter(Boolean);
         if (tags.length) return tags.join(',');
-        const values = box.querySelector('.next-select-values');
+        const values = box.querySelector('.next-select-values')?.cloneNode(true);
+        values?.querySelectorAll('.next-select-trigger-search, input, textarea, [aria-hidden="true"], .next-sr-only')
+          .forEach(node => node.remove());
         const selected = box.querySelector('.next-select-selection-item, .ant-select-selection-item');
-        const input = box.querySelector('input');
-        const value = (values?.innerText || values?.textContent || selected?.innerText ||
-          input?.getAttribute('aria-valuetext') || input?.value || '').trim();
+        const input = box.querySelector('input:not([type="hidden"]), textarea');
+        const propType = (box.getAttribute('cat-prop-type') || '').toLowerCase();
+        const plain = ['input', 'text', 'textarea'].includes(propType);
+        const custom = (input?.placeholder || '').includes('直接输入') && input !== document.activeElement;
+        const value = ((plain ? input?.value :
+          (values?.textContent?.trim() || selected?.innerText?.trim() || (custom ? input?.value : ''))) || '').trim();
         const placeholder = (input?.getAttribute('placeholder') || '').trim();
         const emptyValues = new Set(['请选择', '如无合适选项可直接输入填写（可多选）', '如无合适选项可直接输入填写']);
         return value && value !== placeholder && !emptyValues.has(value) ? value : '';
@@ -1897,7 +1904,7 @@ def fill_prop(page: ChromiumPage, prop_id: str, value: str) -> bool:
             select = box.ele("tag:select", timeout=1)
             if select:
                 return bool(select.select.by_text(requested))
-            inp = box.ele("tag:input", timeout=1)
+            inp = box.ele("tag:input", timeout=1) or box.ele("tag:textarea", timeout=1)
             if not inp:
                 return False
             prop_type = str(box.attr("cat-prop-type") or "").lower()

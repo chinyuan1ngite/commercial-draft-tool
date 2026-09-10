@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 
-from draft_tool.browser_actions import add_sale_dimensions, fill_sku_rows
+from draft_tool.browser_actions import add_sale_dimensions, fill_prop, fill_sku_rows, selected_prop_value
 
 
 @unittest.skipUnless(os.environ.get("DRAFT_BROWSER_TESTS") == "1", "set DRAFT_BROWSER_TESTS=1")
@@ -93,6 +93,68 @@ class BrowserDomTests(unittest.TestCase):
         ])
         self.assertEqual(self.page.run_js("return [...document.querySelectorAll('#rows tr')].map(r=>[...r.querySelectorAll('input')].map(i=>i.value))"),
                          [["40", "4", "D"], ["20", "2", "B"], ["30", "3", "C"], ["10", "1", "A"]])
+
+    def test_search_text_without_committed_option_is_not_success(self):
+        self.load('''<div id="guid-title"><input></div>
+          <div cat-prop-id="material" cat-prop-type="select">
+            <div class="next-select-trigger next-has-search">
+              <span class="next-select-values"></span><input placeholder="Search">
+            </div>
+          </div>''')
+        self.assertFalse(fill_prop(self.page, "material", "ABS"))
+        self.assertEqual(selected_prop_value(self.page, "material"), "")
+
+    def test_async_enum_commits_option_and_excludes_search_mirror(self):
+        self.load('''<div id="guid-title"><input></div>
+          <div cat-prop-id="material" cat-prop-type="select">
+            <div class="next-select-trigger next-has-search"><span class="next-select-values">
+              <em id="chosen"></em><span class="next-select-trigger-search"><input placeholder="Search">
+                <span aria-hidden="true">ABBA</span></span>
+            </span></div>
+          </div><div role="option" id="option" style="display:none">ABBA</div>
+          <script>
+            document.querySelector('input[placeholder]').addEventListener('input', () =>
+              setTimeout(() => document.querySelector('#option').style.display='block', 100));
+            document.querySelector('#option').onclick = () => {
+              document.querySelector('#chosen').textContent='ABBA';
+              document.querySelector('input[placeholder]').value='';
+              document.querySelector('#option').style.display='none';
+            };
+          </script>''')
+        self.assertTrue(fill_prop(self.page, "material", "ABBA"))
+        self.assertEqual(selected_prop_value(self.page, "material"), "ABBA")
+        self.assertEqual(self.page.run_js("return document.querySelector('#chosen').textContent"), "ABBA")
+
+    def test_plain_text_and_textarea_commit_without_enum_search(self):
+        for tag in ("input", "textarea"):
+            with self.subTest(tag=tag):
+                self.load(f'<div id="guid-title"><input></div><div cat-prop-id="code" cat-prop-type="{tag}"><{tag}></{tag}></div>')
+                self.assertTrue(fill_prop(self.page, "code", "11223344"))
+                self.assertEqual(selected_prop_value(self.page, "code"), "11223344")
+
+    def test_multi_select_removes_old_values_and_commits_requested_tags(self):
+        self.load('''<div id="guid-title"><input></div>
+          <div cat-prop-id="features" cat-prop-type="multiselect">
+            <div class="next-select-trigger next-select-tag"><input>
+              <span class="next-tag"><span class="next-tag-body">old</span>
+                <button class="next-tag-close-btn" onclick="this.parentNode.remove()">close</button></span>
+            </div>
+          </div><div role="option">red</div><div role="option">blue</div>
+          <script>document.querySelectorAll('[role=option]').forEach(option => option.onclick = () => {
+            const tag=document.createElement('span'); tag.className='next-tag-body'; tag.textContent=option.textContent;
+            document.querySelector('.next-select-trigger').append(tag);
+          });</script>''')
+        self.assertTrue(fill_prop(self.page, "features", "red,blue"))
+        self.assertEqual(selected_prop_value(self.page, "features"), "red,blue")
+
+    def test_custom_attribute_commits_after_blur(self):
+        self.load('''<div id="guid-title"><input></div>
+          <div cat-prop-id="custom" cat-prop-type="select"><div class="next-select-trigger next-has-search">
+            <span class="next-select-values"> <span class="next-select-trigger-search">
+              <input placeholder="如无合适选项可直接输入填写"></span> </span>
+          </div></div>''')
+        self.assertTrue(fill_prop(self.page, "custom", "ABBA"))
+        self.assertEqual(selected_prop_value(self.page, "custom"), "ABBA")
 
 
 if __name__ == "__main__":
