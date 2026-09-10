@@ -39,8 +39,9 @@ class BrowserActionTests(unittest.TestCase):
         row.ele.return_value = add_button
         frame = MagicMock()
         page.get_frame.return_value = frame
+        page.run_js.return_value = False
 
-        self.assertTrue(_configure_sku_image_via_picker(page, row, Path("C:/tmp/red.jpg")))
+        self.assertTrue(_configure_sku_image_via_picker(page, row, Path("C:/tmp/red.jpg"), {}))
         selector = row.ele.call_args.args[0]
         self.assertEqual(selector, "css:.sku-picture-content, .sku-picture-url")
         self.assertNotIn(", css:", selector)
@@ -123,6 +124,8 @@ class BrowserActionTests(unittest.TestCase):
         file_input = MagicMock()
         row.ele.return_value = file_input
         row.eles.side_effect = [[ ], [MagicMock()]]
+        _read.return_value = [{"sku_id": "1", "row_token": "r1"}]
+        page.ele.return_value = row
         result = configure_sku_images(
             page,
             [{"sku_id": "1", "name": "红"}],
@@ -141,22 +144,25 @@ class BrowserActionTests(unittest.TestCase):
             {"1": Path("C:/tmp/red.jpg"), "2": Path("C:/tmp/blue.jpg")},
             rows,
         )
-        self.assertEqual(result["status"], "mapping_ambiguous")
+        self.assertEqual(result["failed"][0]["reason"], "target_sku_identity_ambiguous")
         for row in rows:
             row.ele.assert_not_called()
 
     @patch("draft_tool.browser_actions.time.sleep", return_value=None)
-    @patch("draft_tool.browser_actions.time.time", side_effect=[0, 1, 9])
+    @patch("draft_tool.browser_actions.time.monotonic", side_effect=[0, 1, 9])
     @patch("draft_tool.browser_actions.read_sku_table_rows", return_value=[])
     def test_existing_row_image_is_not_upload_confirmation(self, _read, _time, _sleep):
         row = MagicMock()
         row.ele.return_value = MagicMock()
         row.eles.return_value = [MagicMock()]
+        page = MagicMock()
+        page.ele.return_value = row
+        _read.return_value = [{"sku_id": "1", "row_token": "r1"}]
         result = configure_sku_images(
-            MagicMock(), [{"sku_id": "1", "name": "红"}],
+            page, [{"sku_id": "1", "name": "红"}],
             {"1": Path("C:/tmp/red.jpg")}, [row],
         )
-        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["status"], "indeterminate")
         self.assertEqual(result["failed"][0]["reason"], "image_preview_not_confirmed")
 
     @patch("draft_tool.browser_actions._configure_sku_image_via_picker", return_value=True)
@@ -167,6 +173,8 @@ class BrowserActionTests(unittest.TestCase):
         row = MagicMock()
         row.ele.return_value = None
         row.eles.side_effect = [[], [MagicMock()]]
+        page.ele.return_value = row
+        _read.return_value = [{"sku_id": "1", "row_token": "r1"}]
         result = configure_sku_images(
             page,
             [{"sku_id": "1", "name": "红"}],
@@ -180,9 +188,12 @@ class BrowserActionTests(unittest.TestCase):
     @patch("draft_tool.browser_actions.read_sku_table_rows", return_value=[])
     def test_sku_image_add_button_picker_failure_is_fail_closed(self, _read, _picker):
         page = MagicMock()
+        page.handle_alert.return_value = False
         row = MagicMock()
         row.ele.return_value = None
         row.eles.return_value = []
+        page.ele.return_value = row
+        _read.return_value = [{"sku_id": "1", "row_token": "r1"}]
         result = configure_sku_images(
             page,
             [{"sku_id": "1", "name": "红"}],

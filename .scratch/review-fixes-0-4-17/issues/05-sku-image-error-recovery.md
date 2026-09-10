@@ -1,6 +1,6 @@
 # 05: 隔离 SKU 图片事务异常并可靠恢复后续填写
 
-Status: ready-for-agent
+Status: claimed
 Type: bug
 Priority: P1
 Spec: [0.4.17 Code Review 修复规格](../spec.md)

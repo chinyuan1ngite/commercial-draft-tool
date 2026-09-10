@@ -1,5 +1,7 @@
 """Opt-in browser regressions: set DRAFT_BROWSER_TESTS=1 to run in isolated Chrome."""
 import json
+import base64
+import tempfile
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +13,7 @@ from DrissionPage import ChromiumOptions, ChromiumPage
 
 from draft_tool.browser_actions import add_sale_dimensions, fill_package_weights, fill_prop, fill_sku_rows, selected_prop_value
 from draft_tool.browser_navigation import PopupRecoveryError, dismiss_pending_alert, dismiss_unexpected_popups
+from draft_tool.browser_actions import configure_sku_images, sku_image_block_reason, fill_legacy_description_editor
 
 
 @unittest.skipUnless(os.environ.get("DRAFT_BROWSER_TESTS") == "1", "set DRAFT_BROWSER_TESTS=1")
@@ -252,6 +255,35 @@ class BrowserDomTests(unittest.TestCase):
           <div class="ant-modal"><iframe src="about:blank#schema"></iframe><button class="ant-modal-close" onclick="window.editorClosed=true">editor</button></div>''')
         self.assertEqual(dismiss_unexpected_popups(self.page), ['unrelated_overlays_closed:1'])
         self.assertEqual(self.page.run_js('return Boolean(window.hiddenClicked || window.pickerClosed || window.editorClosed)'), False)
+
+    def test_optional_image_failure_allows_real_weight_and_detail_steps(self):
+        self.load('''<div id="guid-title"><input></div><div id="guid-skuTable"><table data-codex-sku-table="1"><tbody>
+          <tr data-sku-id="A"><td>No image control</td></tr></tbody></table></div>
+          <div id="guid-officialLogistics"><table><thead><tr><th>Weight(g)</th></tr></thead>
+          <tbody><tr><td><input></td><td><input></td><td><input></td><td><input placeholder="重量" oninput="this.setAttribute('value',this.value)"></td></tr></tbody></table></div>
+          <iframe id="tinyMCE-0_ifr" srcdoc="<body contenteditable='true'></body>"></iframe>''')
+        images = configure_sku_images(self.page, [{'sku_id':'A'}], {'A': Path('missing.jpg')})
+        self.assertIsNone(sku_image_block_reason(images))
+        self.assertEqual(sku_image_block_reason(images, required=True), 'blocked_sku_images_not_confirmed')
+        weight = fill_package_weights(self.page, {}, 1000)
+        detail = fill_legacy_description_editor(self.page, {'detail_text':'Fixture detail'})
+        self.assertEqual(weight['status'], 'filled', weight)
+        self.assertEqual(detail['preview'], 'Fixture detail', detail)
+        self.assertEqual(self.page.get_frame('css:#tinyMCE-0_ifr').ele('tag:body').text, 'Fixture detail')
+
+    def test_file_image_readback_reacquires_recreated_row(self):
+        self.load('''<div id="guid-skuTable"><table data-codex-sku-table="1"><tbody>
+          <tr data-sku-id="A"><td><input type="file" onchange="
+            const reader=new FileReader(); reader.onload=()=>{const row=this.closest('tr').cloneNode(true);
+            row.removeAttribute('data-codex-image-row'); const img=document.createElement('img');
+            img.src=reader.result; row.append(img); this.closest('tr').replaceWith(row);};
+            reader.readAsDataURL(this.files[0]);"></td></tr></tbody></table></div>''')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'pixel.png'
+            path.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7V0AAAAASUVORK5CYII='))
+            result = configure_sku_images(self.page, [{'sku_id':'A'}], {'A':path})
+        self.assertEqual(result['status'], 'confirmed', result)
+        self.assertEqual(self.page.run_js('return document.querySelectorAll("tr img").length'), 1)
 
 
 if __name__ == "__main__":

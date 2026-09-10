@@ -222,11 +222,15 @@ def resolve_sku_image_paths(product_path: Path, product: dict[str, Any]) -> tupl
     return _resolve_sku_image_paths(product_path, product)
 
 
+class SkuImageRowReplaced(RuntimeError):
+    pass
+
+
 def configure_sku_images(
     page: ChromiumPage,
     source_skus: list[dict[str, Any]],
     sku_image_paths: dict[str, Path],
-    target_rows: list[Any],
+    target_rows: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Fill row-level SKU image inputs when the seller page exposes them."""
     result: dict[str, Any] = {
@@ -236,18 +240,11 @@ def configure_sku_images(
         "configured_sku_ids": [],
         "failed": [],
         "scope": "sku_row",
+        "safe_to_continue": True,
+        "indeterminate": False,
+        "transactions": [],
     }
     if not sku_image_paths:
-        return result
-    if len(target_rows) != len(source_skus):
-        result.update(status="mapping_ambiguous", reason="target_sku_row_count_mismatch")
-        return result
-    rendered = read_sku_table_rows(page)
-    mapping = match_sku_rows_by_specification(source_skus, rendered)
-    if mapping is None and len(source_skus) == 1 and len(target_rows) == 1:
-        mapping = [0]
-    if mapping is None:
-        result.update(status="mapping_ambiguous", reason="target_sku_rows_could_not_be_matched")
         return result
     for source_index, source in enumerate(source_skus):
         sku_id = str(source.get("sku_id") or "").strip()
@@ -256,83 +253,160 @@ def configure_sku_images(
         )
         if not path:
             continue
-        row = target_rows[mapping[source_index]]
-        file_input = row.ele('css:input[type="file"]', timeout=1)
+        transaction = {"sku_id": sku_id, "stage": "row_resolution", "status": "failed",
+                       "side_effect_possible": False, "safe_to_continue": True,
+                       "picker_owned": False}
+        result["transactions"].append(transaction)
         try:
-            before = len(row.eles("tag:img"))
-        except Exception:
-            before = 0
-        if file_input:
-            try:
+            row = _resolve_sku_image_row(page, source_skus, source_index)
+            transaction["stage"] = "control_lookup"
+            file_input = row.ele('css:input[type="file"]', timeout=1)
+            before = len(row.eles("tag:img", timeout=0))
+            if file_input:
+                transaction["stage"] = "upload"
+                transaction["side_effect_possible"] = True
                 file_input.input(str(path.resolve()))
-                deadline = time.time() + 8
-                confirmed = False
-                while time.time() < deadline:
-                    try:
-                        after = len(row.eles("tag:img"))
-                        # Existing placeholder/history images are not evidence that
-                        # this upload succeeded. Require a concrete count increase.
-                        confirmed = after > before
-                    except Exception:
-                        confirmed = False
-                    if confirmed:
-                        break
-                    time.sleep(.25)
-                if confirmed:
-                    result["configured"] += 1
-                    result["configured_sku_ids"].append(sku_id)
-                else:
-                    result["failed"].append({"sku_id": sku_id, "reason": "image_preview_not_confirmed"})
-            except Exception as exc:
-                result["failed"].append({"sku_id": sku_id, "reason": type(exc).__name__})
-        else:
-            if not _configure_sku_image_via_picker(page, row, path):
-                result["failed"].append({"sku_id": sku_id, "reason": "picker_image_control_failed"})
-                continue
-            deadline = time.time() + 8
-            confirmed = False
-            while time.time() < deadline:
+            elif not _configure_sku_image_via_picker(page, row, path, transaction):
+                raise RuntimeError("picker_image_control_failed")
+            transaction["stage"] = "readback"
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
                 try:
-                    after = len(row.eles("tag:img"))
-                    confirmed = after > before
-                except Exception:
-                    confirmed = False
-                if confirmed:
+                    row = _resolve_sku_image_row(page, source_skus, source_index)
+                except SkuImageRowReplaced:
+                    time.sleep(.1)
+                    continue
+                if len(row.eles("tag:img", timeout=0)) > before:
+                    transaction["status"] = "confirmed"
                     break
                 time.sleep(.25)
-            if confirmed:
-                result["configured"] += 1
-                result["configured_sku_ids"].append(sku_id)
             else:
-                result["failed"].append({"sku_id": sku_id, "reason": "image_preview_not_confirmed"})
-    if result["configured"] == result["requested"]:
+                raise RuntimeError("image_preview_not_confirmed")
+        except Exception as exc:
+            transaction["error"] = f"{type(exc).__name__}: {exc}"
+            transaction["reason"] = str(exc)
+            transaction["status"] = "indeterminate" if transaction["side_effect_possible"] else "failed"
+        finally:
+            if transaction["picker_owned"]:
+                try:
+                    _close_sku_picture_picker(page)
+                    transaction["recovery"] = "picker_closed"
+                except Exception as exc:
+                    transaction["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                    transaction["safe_to_continue"] = False
+                    transaction.setdefault("error", transaction["cleanup_error"])
+                    transaction.setdefault("reason", "picker_cleanup_failed")
+                    if transaction["status"] == "confirmed":
+                        transaction["stage"] = "cleanup"
+                        transaction["status"] = "failed"
+        if transaction["status"] == "confirmed":
+            result["configured"] += 1
+            result["configured_sku_ids"].append(sku_id)
+        else:
+            try:
+                if page.handle_alert(accept="get", timeout=.2) not in (False, None):
+                    raise RuntimeError("native_dialog_blocks_continuation")
+                if not page.run_js("return Boolean(document.documentElement)"):
+                    raise RuntimeError("page_unavailable")
+            except Exception as exc:
+                transaction["safe_to_continue"] = False
+                transaction["recovery_error"] = f"{type(exc).__name__}: {exc}"
+            result["failed"].append(dict(transaction))
+        result["safe_to_continue"] &= transaction["safe_to_continue"]
+        result["indeterminate"] |= transaction["status"] == "indeterminate"
+        if result["indeterminate"] or not result["safe_to_continue"]:
+            break
+    if result["indeterminate"]:
+        result["status"] = "indeterminate"
+    elif not result["safe_to_continue"]:
+        result["status"] = "recovery_failed"
+    elif result["configured"] == result["requested"]:
         result["status"] = "confirmed"
     elif result["configured"]:
         result["status"] = "partial"
     return result
 
 
-def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path) -> bool:
+def sku_image_block_reason(result: dict[str, Any], required: bool = False) -> str | None:
+    if result.get("indeterminate") or not result.get("safe_to_continue", True):
+        return "blocked_sku_image_transaction"
+    if required and result.get("status") != "confirmed":
+        return "blocked_sku_images_not_confirmed"
+    return None
+
+
+def _resolve_sku_image_row(page: ChromiumPage, sources: list[dict[str, Any]], index: int) -> Any:
+    """Reacquire a current node from complete identity, never an old row handle."""
+    rendered = read_sku_table_rows(page)
+    mapping = []
+    known_ids = {str(source.get("sku_id") or "") for source in sources} - {""}
+    for source in sources:
+        key = specification_key(source.get("properties") or source.get("specProps"))
+        candidates = []
+        for row_index, row in enumerate(rendered):
+            target_id = str(row.get("sku_id") or "")
+            matches = target_id == str(source.get("sku_id")) if target_id in known_ids else (
+                bool(key) and key == specification_key(row.get("properties")))
+            if matches:
+                candidates.append(row_index)
+        if len(candidates) != 1:
+            raise RuntimeError("target_sku_identity_ambiguous")
+        mapping.append(candidates[0])
+    if len(set(mapping)) != len(sources) or len(rendered) != len(sources):
+        raise RuntimeError("target_sku_identity_ambiguous")
+    token = str(rendered[mapping[index]].get("row_token") or "")
+    if not token or not re.fullmatch(r"[a-zA-Z0-9_-]+", token):
+        raise RuntimeError("target_sku_row_token_missing")
+    row = page.ele(f'css:[data-codex-image-row="{token}"]', timeout=0)
+    if not row:
+        raise SkuImageRowReplaced("target_sku_row_replaced")
+    return row
+
+
+def _close_sku_picture_picker(page: ChromiumPage) -> None:
+    """Close only this transaction's picker; do not remove global overlays."""
+    page.run_js("""
+        const dialogs = [...document.querySelectorAll('.ibank-picker-dialog')].filter(e => e.getClientRects().length);
+        if (dialogs.length > 1) throw new Error('ambiguous picker cleanup');
+        if (dialogs.length) {
+            const close = dialogs[0].querySelector('.close');
+            if (!close) throw new Error('picker close missing');
+            close.click();
+        }
+    """)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not page.run_js("return [...document.querySelectorAll('.ibank-picker-dialog')].some(e => e.getClientRects().length)"):
+            return
+        time.sleep(.1)
+    raise RuntimeError("picker_cleanup_not_confirmed")
+
+
+def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path, transaction: dict[str, Any]) -> bool:
     """Upload or select one SKU image through the row-level picture picker."""
     add_button = row.ele('css:.sku-picture-content, .sku-picture-url', timeout=2)
     if not add_button:
         return False
+    if page.run_js("return [...document.querySelectorAll('.ibank-picker-dialog')].some(e => e.getClientRects().length)"):
+        transaction["safe_to_continue"] = False
+        raise RuntimeError("another_picker_is_active")
+    transaction["picker_owned"] = True
+    transaction["stage"] = "click"
     add_button.click()
     time.sleep(1.2)
+    transaction["stage"] = "frame_acquisition"
     frame = page.get_frame("css:iframe.picker-frame", timeout=5)
     if not frame:
-        _close_picture_picker(page)
         return False
-    try:
-        # Prefer an exact same-title selection for idempotent retries.
-        if _picker_select_titles(frame, [path.stem]) > 0 and _picker_submit(frame):
-            time.sleep(1.2)
-            return True
+    transaction["stage"] = "selection"
+    if _picker_select_titles(frame, [path.stem]) < 1:
         frame.run_js("document.querySelector('li.tab-upload')?.click();")
         time.sleep(.7)
         file_input = frame.ele('css:input[type="file"]', timeout=3)
         if not file_input:
             return False
+        transaction["stage"] = "upload"
+        transaction["side_effect_possible"] = True
         file_input.input(str(path.resolve()))
         deadline = time.time() + 20
         uploaded = False
@@ -348,11 +422,9 @@ def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path) ->
         time.sleep(1)
         if _picker_select_titles(frame, [path.stem]) < 1:
             return False
-        return _picker_submit(frame)
-    except Exception:
-        return False
-    finally:
-        _close_picture_picker(page)
+    transaction["stage"] = "submit"
+    transaction["side_effect_possible"] = True
+    return _picker_submit(frame)
 
 
 def image_info(path: Path) -> dict[str, Any]:
@@ -2287,6 +2359,8 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
         const saleLabels = new Set([...document.querySelectorAll('#guid-saleProp .nak-label')]
           .map(node => node.innerText.replace(/[*:：]/g, '').trim()));
         return Array.from(table.querySelectorAll('tbody tr')).filter(row => row.offsetParent !== null).map(row => {
+          window.__codexImageRowSequence = (window.__codexImageRowSequence || 0) + 1;
+          row.dataset.codexImageRow = 'r' + window.__codexImageRowSequence;
           const cells = Array.from(row.querySelectorAll('td'));
           const inputs = Array.from(row.querySelectorAll('input')).map(input => ({
             value: input.value || '',
@@ -2314,6 +2388,7 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
            const targetSkuId = row.getAttribute('data-sku-id') || row.getAttribute('data-skuid') || identityInput?.value || '';
            return {
              text: (row.innerText || '').trim(), inputs, sku_id: targetSkuId,
+             row_token: row.dataset.codexImageRow,
              sku_identity_available: Boolean(targetSkuId), merchant_code: codeInput?.value || '',
              properties: values, headers,
              image_count: Array.from(row.querySelectorAll('img')).filter(img => img.offsetParent !== null).length
@@ -3230,7 +3305,6 @@ def main(argv: list[str] | None = None) -> int:
         elif sku_image_paths:
             report["fields"]["sku_images"] = configure_sku_images(
                 page, normalized_sku_rows, sku_image_paths,
-                page.eles('css:table[data-codex-sku-table="1"] tbody tr'),
             )
         else:
             report["fields"]["sku_images"] = {
@@ -3240,6 +3314,14 @@ def main(argv: list[str] | None = None) -> int:
             report.setdefault("warnings", []).append(
                 f"SKU 图片配置失败: {len(report['fields']['sku_images']['failed'])} 个"
             )
+        image_result = report["fields"]["sku_images"]
+        if sku_image_block_reason(image_result):
+            report["result"] = sku_image_block_reason(image_result)
+            report["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write(args.output_dir / "report.json", json.dumps(report, ensure_ascii=False, indent=2))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 4
         report["fields"]["sku_rows"] = sku_result["count"]
         report["fields"]["sku_table"] = sku_result.get("table")
         report["fields"]["sku_rendered_rows"] = sku_result.get("rendered")
@@ -3474,10 +3556,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 4
             sku_image_result = report["fields"].get("sku_images") or {}
-            if sku_image_paths and args.require_sku_images and (
-                sku_image_result.get("status") != "confirmed"
-            ):
-                report["result"] = "blocked_sku_images_not_confirmed"
+            if sku_image_block_reason(sku_image_result, required=args.require_sku_images):
+                report["result"] = sku_image_block_reason(sku_image_result, required=args.require_sku_images)
                 report.setdefault("warnings", []).append("SKU 图片为必填，但未全部确认")
                 save_artifacts(page, args.output_dir, report)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
