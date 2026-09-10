@@ -1,5 +1,7 @@
 """Faults at the browser boundary exercise the real image transaction."""
 import unittest
+import base64
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +9,13 @@ from draft_tool.browser_actions import configure_sku_images
 
 
 class SkuImageRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.path = Path(self.folder.name) / 'red.jpg'
+        self.path.write_bytes(b'fixture image')
+        self.src = 'data:image/png;base64,' + base64.b64encode(b'fixture image').decode('ascii')
+
     def browser(self):
         page = MagicMock()
         row = MagicMock()
@@ -18,10 +27,11 @@ class SkuImageRecoveryTests(unittest.TestCase):
             return script == 'return Boolean(document.documentElement)'
         page.run_js.side_effect = run_js
         row.eles.return_value = []
+        row.run_js.return_value = []
         return page, row
 
     def configure(self, page):
-        return configure_sku_images(page, [{"sku_id": "A", "properties": {"Color": "red"}}], {"A": Path("red.jpg")})
+        return configure_sku_images(page, [{"sku_id": "A", "properties": {"Color": "red"}}], {"A": self.path})
 
     def test_control_lookup_failure_is_recorded_and_later_sku_is_attempted(self):
         page = MagicMock()
@@ -56,7 +66,7 @@ class SkuImageRecoveryTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 page, row = self.browser()
                 button = MagicMock()
-                row.ele.side_effect = [None, button]
+                row.ele.side_effect = [None, button, button]
                 if stage == 'click':
                     button.click.side_effect = RuntimeError('click detached')
                 else:
@@ -82,7 +92,7 @@ class SkuImageRecoveryTests(unittest.TestCase):
     def test_cleanup_failure_preserves_original_error_and_stops_continuation(self, _sleep):
         page, row = self.browser()
         button = MagicMock()
-        row.ele.side_effect = [None, button]
+        row.ele.side_effect = [None, button, button]
         page.get_frame.side_effect = RuntimeError('frame detached')
         original = page.run_js.side_effect
         def run_js(script, *args):
@@ -99,11 +109,21 @@ class SkuImageRecoveryTests(unittest.TestCase):
     @patch('draft_tool.browser_actions.time.sleep', return_value=None)
     def test_submit_failure_is_indeterminate(self, _sleep):
         page, row = self.browser()
-        row.ele.side_effect = [None, MagicMock()]
+        button = MagicMock()
+        row.ele.side_effect = [None, button, button]
         frame = page.get_frame.return_value
         def run_js(script, *args):
-            if "node.click()" in script:
+            if '.ib-footer.action' in script:
                 raise TimeoutError('submit result unknown')
+            if 'codexImageChoice' in script:
+                return [{'title':'red','src':self.src,'token':'c1','id':'remote'}]
+            if "'.insert-pool li')).map" in script:
+                return [{'src':self.src}]
+            if "querySelectorAll('.insert-pool li').length" in script:
+                return 0 if not getattr(self, 'selected', False) else 1
+            if 'node.click()' in script:
+                self.selected = True
+                return True
             return 1
         frame.run_js.side_effect = run_js
         result = self.configure(page)

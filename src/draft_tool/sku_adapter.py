@@ -94,6 +94,7 @@ def normalize_sku_model(skus: list[dict[str, Any]] | None, max_dimensions: int =
             "properties": props,
             "price": price,
             "stock": stock,
+            "image_ref": row.get("image_ref"),
         })
 
     key_sets = [set(row["properties"].keys()) for row in normalized]

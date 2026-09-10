@@ -24,9 +24,10 @@ from PIL import Image
 from .browser_navigation import PopupRecoveryError, dismiss_unexpected_popups, navigate_with_alert_recovery
 from .media import resolve_sku_image_paths as _resolve_sku_image_paths
 from .media import specification_key
+from .media_verification import verified_image
 from .config import DEFAULT_PACKAGE_WEIGHT_GRAMS
 from .sku_adapter import clean_sku_value, normalize_sku_model, validate_target_rows
-from .security import atomic_write
+from .security import MAX_IMAGE_BYTES, atomic_write
 
 
 PUBLISH_URL = "https://offer-new.1688.com/popular/publish.htm"
@@ -246,6 +247,7 @@ def configure_sku_images(
     }
     if not sku_image_paths:
         return result
+    verification_cache: dict[str, str | None] = {}
     for source_index, source in enumerate(source_skus):
         sku_id = str(source.get("sku_id") or "").strip()
         path = sku_image_paths.get(sku_id) or sku_image_paths.get(
@@ -253,7 +255,8 @@ def configure_sku_images(
         )
         if not path:
             continue
-        transaction = {"sku_id": sku_id, "stage": "row_resolution", "status": "failed",
+        transaction = {"sku_id": sku_id, "specification": source.get("properties") or source.get("specProps") or {},
+                       "stage": "row_resolution", "status": "failed",
                        "side_effect_possible": False, "safe_to_continue": True,
                        "picker_owned": False}
         result["transactions"].append(transaction)
@@ -261,12 +264,27 @@ def configure_sku_images(
             row = _resolve_sku_image_row(page, source_skus, source_index)
             transaction["stage"] = "control_lookup"
             file_input = row.ele('css:input[type="file"]', timeout=1)
-            before = len(row.eles("tag:img", timeout=0))
-            if file_input:
+            if not file_input and not row.ele('css:.sku-picture-content, .sku-picture-url', timeout=0):
+                raise RuntimeError("sku_image_control_missing")
+            transaction["stage"] = "media_validation"
+            with path.open('rb') as media_file:
+                content = media_file.read(MAX_IMAGE_BYTES + 1)
+            if not content or len(content) > MAX_IMAGE_BYTES:
+                raise RuntimeError("local_media_size_invalid")
+            digest = hashlib.sha256(content).hexdigest()
+            media_ref = str(source.get("image_ref") or f"sha256:{digest}")
+            if media_ref.startswith("sha256:") and media_ref != f"sha256:{digest}":
+                raise RuntimeError("local_media_identity_mismatch")
+            transaction.update(media_ref=media_ref, sha256=digest)
+            existing = _sku_row_image_records(row)
+            already_correct = len(existing) == 1 and verified_image(existing[0], digest, verification_cache)
+            if already_correct:
+                transaction["reused"] = True
+            elif file_input:
                 transaction["stage"] = "upload"
                 transaction["side_effect_possible"] = True
                 file_input.input(str(path.resolve()))
-            elif not _configure_sku_image_via_picker(page, row, path, transaction):
+            elif not _configure_sku_image_via_picker(page, row, path, transaction, verification_cache):
                 raise RuntimeError("picker_image_control_failed")
             transaction["stage"] = "readback"
             deadline = time.monotonic() + 8
@@ -276,7 +294,9 @@ def configure_sku_images(
                 except SkuImageRowReplaced:
                     time.sleep(.1)
                     continue
-                if len(row.eles("tag:img", timeout=0)) > before:
+                records = _sku_row_image_records(row)
+                if len(records) == 1 and verified_image(records[0], digest, verification_cache):
+                    transaction["platform_image"] = records[0]
                     transaction["status"] = "confirmed"
                     break
                 time.sleep(.25)
@@ -286,6 +306,14 @@ def configure_sku_images(
             transaction["error"] = f"{type(exc).__name__}: {exc}"
             transaction["reason"] = str(exc)
             transaction["status"] = "indeterminate" if transaction["side_effect_possible"] else "failed"
+            if transaction["side_effect_possible"] and transaction.get("sha256"):
+                try:
+                    current = _resolve_sku_image_row(page, source_skus, source_index)
+                    records = _sku_row_image_records(current)
+                    if len(records) == 1 and verified_image(records[0], transaction["sha256"], verification_cache):
+                        transaction.update(status="confirmed", reconciled=True, platform_image=records[0])
+                except Exception:
+                    pass
         finally:
             if transaction["picker_owned"]:
                 try:
@@ -325,6 +353,40 @@ def configure_sku_images(
     elif result["configured"]:
         result["status"] = "partial"
     return result
+
+
+def _sku_row_image_records(row: Any) -> list[dict[str, Any]]:
+    return list(row.run_js("""
+        const scoped = this.querySelectorAll('.sku-picture-url img, .sku-picture-content img');
+        const images = scoped.length ? scoped : this.querySelectorAll('img');
+        return [...images].filter(e => e.getClientRects().length).map(img => ({
+            src: img.src || '', id: img.getAttribute('data-image-id') || '', loaded: img.complete && img.naturalWidth > 0
+        }));
+    """) or [])
+
+
+def verify_sku_images(page: ChromiumPage, sources: list[dict[str, Any]], configured: dict[str, Any]) -> dict[str, Any]:
+    """Read-only content and SKU identity verification after reopening a draft."""
+    checks = []
+    cache: dict[str, str | None] = {}
+    for transaction in configured.get("transactions") or []:
+        if transaction.get("status") != "confirmed":
+            continue
+        check = {"sku_id": transaction.get("sku_id"), "verified": False}
+        try:
+            candidates = [index for index, source in enumerate(sources) if (
+                str(source.get("sku_id") or "") == transaction.get("sku_id") if transaction.get("sku_id") else
+                specification_key(source.get("properties") or source.get("specProps")) == specification_key(transaction.get("specification"))
+            )]
+            if len(candidates) != 1:
+                raise RuntimeError("reopen_source_identity_ambiguous")
+            row = _resolve_sku_image_row(page, sources, candidates[0])
+            records = _sku_row_image_records(row)
+            check["verified"] = len(records) == 1 and verified_image(records[0], transaction["sha256"], cache)
+        except Exception as exc:
+            check["error"] = f"{type(exc).__name__}: {exc}"
+        checks.append(check)
+    return {"verified": len(checks) == configured.get("configured", 0) and all(check["verified"] for check in checks), "checks": checks}
 
 
 def sku_image_block_reason(result: dict[str, Any], required: bool = False) -> str | None:
@@ -382,7 +444,33 @@ def _close_sku_picture_picker(page: ChromiumPage) -> None:
     raise RuntimeError("picker_cleanup_not_confirmed")
 
 
-def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path, transaction: dict[str, Any]) -> bool:
+def _sku_picker_candidates(frame: Any, title: str) -> list[dict[str, str]]:
+    return list(frame.run_js("""
+        const norm = value => String(value || '').trim().replace(/[.](?:jpe?g|png|webp)$/i, '');
+        const wanted = norm(arguments[0]);
+        const nodes = [...new Set([...document.querySelectorAll('a[title], a img[alt], a[data-name], a[data-file-name]')]
+          .map(e => e.matches('a') ? e : e.closest('a')))];
+        return nodes.filter(e => e && e.getClientRects().length && !e.closest('.insert-pool'))
+          .map((e,index) => {
+            e.dataset.codexImageChoice = 'c' + index;
+            return {title: e.title || e.dataset.name || e.dataset.fileName || e.querySelector('img')?.alt || '',
+              src: e.querySelector('img')?.src || '', id: e.dataset.id || e.dataset.imageId || '',
+              token: e.dataset.codexImageChoice};
+          }).filter(record => norm(record.title) === wanted);
+    """, title) or [])
+
+
+def _verified_sku_candidate(frame: Any, title: str, digest: str, cache: dict[str, str | None]) -> dict[str, str] | None:
+    candidates = _sku_picker_candidates(frame, title)
+    if len(candidates) > 4:
+        raise RuntimeError("too_many_media_candidates")
+    return next((record for record in candidates if verified_image(record, digest, cache)), None)
+
+
+def _configure_sku_image_via_picker(
+    page: ChromiumPage, row: Any, path: Path, transaction: dict[str, Any],
+    verification_cache: dict[str, str | None],
+) -> bool:
     """Upload or select one SKU image through the row-level picture picker."""
     add_button = row.ele('css:.sku-picture-content, .sku-picture-url', timeout=2)
     if not add_button:
@@ -399,29 +487,50 @@ def _configure_sku_image_via_picker(page: ChromiumPage, row: Any, path: Path, tr
     if not frame:
         return False
     transaction["stage"] = "selection"
-    if _picker_select_titles(frame, [path.stem]) < 1:
+    _picker_clear_pool(frame)
+    if _picker_search_title(frame, path.stem):
+        time.sleep(.7)
+    digest = transaction["sha256"]
+    candidate = _verified_sku_candidate(frame, path.stem, digest, verification_cache)
+    if candidate is None:
         frame.run_js("document.querySelector('li.tab-upload')?.click();")
         time.sleep(.7)
         file_input = frame.ele('css:input[type="file"]', timeout=3)
         if not file_input:
             return False
+        previous_successes = _picker_upload_success_count(frame)
         transaction["stage"] = "upload"
         transaction["side_effect_possible"] = True
         file_input.input(str(path.resolve()))
-        deadline = time.time() + 20
-        uploaded = False
-        while time.time() < deadline:
-            body = frame.ele("tag:body")
-            if body and "上传成功" in (body.text or ""):
-                uploaded = True
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if _picker_upload_success_count(frame) > previous_successes:
                 break
             time.sleep(.4)
-        if not uploaded:
-            return False
+        else:
+            raise RuntimeError("upload_completion_unconfirmed")
+        transaction["upload_progress_verified"] = True
         frame.run_js("document.querySelector('li.tab-album')?.click();")
         time.sleep(1)
-        if _picker_select_titles(frame, [path.stem]) < 1:
-            return False
+        candidate = _verified_sku_candidate(frame, path.stem, digest, verification_cache)
+        if candidate is None:
+            raise RuntimeError("uploaded_media_identity_unconfirmed")
+    else:
+        transaction["reused"] = True
+    transaction["stage"] = "selection"
+    _picker_clear_pool(frame)
+    selected = frame.run_js("""
+        const record = JSON.parse(arguments[0]);
+        const node = document.querySelector('[data-codex-image-choice="' + record.token + '"]');
+        if (!node || node.querySelector('img')?.src !== record.src) return false;
+        node.click(); return true;
+    """, json.dumps(candidate))
+    if not selected:
+        raise RuntimeError("media_candidate_replaced")
+    pool = _picker_pool_records(frame)
+    if len(pool) != 1 or not verified_image(pool[0], digest, verification_cache):
+        raise RuntimeError("selection_pool_identity_mismatch")
+    transaction["selected_platform_image"] = {key: candidate[key] for key in ("src", "id")}
     transaction["stage"] = "submit"
     transaction["side_effect_possible"] = True
     return _picker_submit(frame)
@@ -3679,11 +3788,10 @@ def main(argv: list[str] | None = None) -> int:
                 report["state_after_reopen"] = inspect_state(page)
                 discover_sku_table(page)
                 reopened_rows = read_sku_table_rows(page)
-                reopened_sku_image_rows = sum(1 for row in reopened_rows if int(row.get("image_count") or 0) > 0)
-                report["sku_images_reopen_verified"] = (
-                    reopened_sku_image_rows >= expected_sku_images
-                    if expected_sku_images else True
+                report["sku_images_reopen_checks"] = verify_sku_images(
+                    page, normalized_sku_rows, report["fields"].get("sku_images") or {},
                 )
+                report["sku_images_reopen_verified"] = report["sku_images_reopen_checks"]["verified"]
                 reopened_for_validation = []
                 reopened_page_price = str((read_price_range(page).get("price") or "")).strip()
                 if not reopened_page_price:

@@ -2,6 +2,7 @@
 import json
 import base64
 import tempfile
+from io import BytesIO
 import os
 from pathlib import Path
 import shutil
@@ -10,10 +11,11 @@ import unittest
 from urllib.parse import quote
 
 from DrissionPage import ChromiumOptions, ChromiumPage
+from PIL import Image
 
 from draft_tool.browser_actions import add_sale_dimensions, fill_package_weights, fill_prop, fill_sku_rows, selected_prop_value
 from draft_tool.browser_navigation import PopupRecoveryError, dismiss_pending_alert, dismiss_unexpected_popups
-from draft_tool.browser_actions import configure_sku_images, sku_image_block_reason, fill_legacy_description_editor
+from draft_tool.browser_actions import configure_sku_images, sku_image_block_reason, fill_legacy_description_editor, verify_sku_images
 
 
 @unittest.skipUnless(os.environ.get("DRAFT_BROWSER_TESTS") == "1", "set DRAFT_BROWSER_TESTS=1")
@@ -32,6 +34,8 @@ class BrowserDomTests(unittest.TestCase):
 
     def load(self, html):
         self.page.get("data:text/html;charset=utf-8," + quote(html))
+        self.page.wait.doc_loaded(timeout=5)
+        time.sleep(.1)
 
     def sale_form(self, dimensions, placeholders=None, delay=0):
         self.load((Path(__file__).parent / "fixtures/sale-properties.html").read_text(encoding="utf-8"))
@@ -284,6 +288,103 @@ class BrowserDomTests(unittest.TestCase):
             result = configure_sku_images(self.page, [{'sku_id':'A'}], {'A':path})
         self.assertEqual(result['status'], 'confirmed', result)
         self.assertEqual(self.page.run_js('return document.querySelectorAll("tr img").length'), 1)
+
+    def test_correct_existing_image_is_reused_without_upload(self):
+        payload = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7V0AAAAASUVORK5CYII='
+        self.load('''<div id="guid-skuTable"><table data-codex-sku-table="1"><tbody>
+          <tr data-sku-id="A"><td><input type="file" onchange="window.uploaded=true"><img src="data:image/png;base64,'''+payload+'''"></td>
+          </tr></tbody></table></div>''')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'pixel.png'
+            path.write_bytes(base64.b64decode(payload))
+            result = configure_sku_images(self.page, [{'sku_id':'A'}], {'A':path})
+        self.assertEqual(result['status'], 'confirmed', result)
+        self.assertFalse(self.page.run_js('return Boolean(window.uploaded)'))
+
+    def image_fixture(self, options, records=None, skus=None):
+        self.load((Path(__file__).parent / 'fixtures/sku-images.html').read_text(encoding='utf-8'))
+        self.page.run_js('window.setup(...JSON.parse(arguments[0]))', json.dumps([options, records or [], skus or ['A']]))
+
+    def image_data(self, color):
+        buffer = BytesIO()
+        Image.new('RGB', (2, 2), color).save(buffer, format='PNG')
+        return buffer.getvalue(), 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+
+    def test_picker_rejects_name_collisions_and_clears_stale_pool(self):
+        data, correct = self.image_data('red')
+        _, wrong = self.image_data('blue')
+        old = {'title':'pixel.png', 'src':wrong, 'id':'old'}
+        self.image_fixture({'staleSelection':old, 'staleCount':3, 'delay':100},
+                           [old, {'title':'pixel.png-extra','src':wrong,'id':'prefix'}])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'pixel.png'; path.write_bytes(data)
+            first = configure_sku_images(self.page, [{'sku_id':'A'}], {'A':path})
+            second = configure_sku_images(self.page, [{'sku_id':'A'}], {'A':path})
+        self.assertEqual(first['status'], 'confirmed', first)
+        self.assertEqual(second['status'], 'confirmed', second)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1,1])
+        self.assertEqual(self.page.run_js('return document.querySelector("tr img").src'), correct)
+        self.assertEqual(self.page.run_js('return document.querySelector("tr img").naturalWidth'), 2)
+        self.assertEqual(self.page.run_js('return document.querySelectorAll(".ibank-picker-dialog").length'), 0)
+
+    def test_picker_reuses_only_content_verified_album_image(self):
+        data, correct = self.image_data('red')
+        self.image_fixture({}, [{'title':'pixel.png','src':correct,'id':'known'}])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'pixel.png'; path.write_bytes(data)
+            result = configure_sku_images(self.page, [{'sku_id':'A'}], {'A':path})
+        self.assertEqual(result['status'], 'confirmed', result)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [0,1])
+
+    def test_image_replacement_and_reopen_use_identity_not_counts(self):
+        red, red_src = self.image_data('red'); blue, blue_src = self.image_data('blue')
+        self.image_fixture({'direct':True, 'recreate':True}, skus=['B','A'])
+        self.page.run_js('window.commit("B",[arguments[0]]);window.commit("A",[arguments[1]])', red_src, blue_src)
+        # Restoring fixture handlers simulates the framework binding the rebuilt nodes.
+        self.page.run_js('''document.querySelectorAll('input').forEach(input=>input.onchange=()=>{
+          window.uploads++; const reader=new FileReader(); const sku=input.closest('tr').dataset.skuId;
+          reader.onload=()=>commit(sku,[reader.result]); reader.readAsDataURL(input.files[0]);});''')
+        sources = [{'sku_id':'A'}, {'sku_id':'B'}]
+        with tempfile.TemporaryDirectory() as folder:
+            red_path=Path(folder)/'red.png'; red_path.write_bytes(red)
+            blue_path=Path(folder)/'blue.png'; blue_path.write_bytes(blue)
+            result=configure_sku_images(self.page,sources,{'A':red_path,'B':blue_path})
+        self.assertEqual(result['status'],'confirmed',result)
+        self.page.run_js('const body=document.querySelector("tbody");body.append(body.firstElementChild)')
+        self.assertTrue(verify_sku_images(self.page,sources,result)['verified'])
+        self.page.run_js('const images=document.querySelectorAll("tr img");const first=images[0].src;images[0].src=images[1].src;images[1].src=first;')
+        self.assertFalse(verify_sku_images(self.page,sources,result)['verified'])
+        self.assertEqual(self.page.run_js('return document.querySelectorAll("tr img").length'),2)
+
+    def test_old_upload_success_does_not_confirm_stalled_upload(self):
+        data, _ = self.image_data('red')
+        self.image_fixture({'stall':True, 'staleCount':9})
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'pixel.png'; path.write_bytes(data)
+            result=configure_sku_images(self.page,[{'sku_id':'A'}],{'A':path})
+        self.assertEqual(result['status'],'indeterminate',result)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'),[1,0])
+        self.assertEqual(sku_image_block_reason(result),'blocked_sku_image_transaction')
+
+    def test_image_count_growth_with_wrong_content_is_not_confirmed(self):
+        data, _ = self.image_data('red'); _, wrong = self.image_data('blue')
+        self.image_fixture({'direct':True,'corrupt':wrong})
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'pixel.png'; path.write_bytes(data)
+            result=configure_sku_images(self.page,[{'sku_id':'A'}],{'A':path})
+        self.assertEqual(result['status'],'indeterminate',result)
+        self.assertEqual(self.page.run_js('return document.querySelectorAll("tr img").length'),1)
+
+    def test_picker_refuses_extra_pool_item_before_submit(self):
+        data, correct = self.image_data('red'); _, wrong = self.image_data('blue')
+        self.image_fixture({'extraSelection':{'title':'other','src':wrong}},
+                           [{'title':'pixel.png','src':correct,'id':'known'}])
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'pixel.png'; path.write_bytes(data)
+            result=configure_sku_images(self.page,[{'sku_id':'A'}],{'A':path})
+        self.assertEqual(result['status'],'unsupported',result)
+        self.assertEqual(result['failed'][0]['reason'],'selection_pool_identity_mismatch')
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'),[0,0])
 
 
 if __name__ == "__main__":

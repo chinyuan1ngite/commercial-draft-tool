@@ -101,7 +101,7 @@ def download_image(url: str, destination: Path, *, max_bytes: int = MAX_IMAGE_BY
             return total
 
 
-def read_allowlisted_url(url: str, allowed_hosts: set[str], *, max_bytes: int = 8 * 1024 * 1024) -> tuple[bytes, object]:
+def read_allowlisted_url(url: str, allowed_hosts: set[str], *, max_bytes: int = 8 * 1024 * 1024, timeout: float = 20) -> tuple[bytes, object]:
     """Read a bounded HTTPS response while validating every redirect."""
     class SafeRedirectHandler(HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -112,7 +112,7 @@ def read_allowlisted_url(url: str, allowed_hosts: set[str], *, max_bytes: int = 
     if not hostname_allowed(url, allowed_hosts):
         raise ValueError("URL 主机不在允许列表或不是 HTTPS")
     request = Request(url, headers={"User-Agent": "commercial-draft-tool/0.2"})
-    with build_opener(SafeRedirectHandler()).open(request, timeout=20) as response:
+    with build_opener(SafeRedirectHandler()).open(request, timeout=timeout) as response:
         if not hostname_allowed(response.geturl(), allowed_hosts):
             raise ValueError("最终 URL 不在允许列表")
         length = response.headers.get("Content-Length")

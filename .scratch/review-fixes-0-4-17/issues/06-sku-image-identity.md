@@ -1,6 +1,6 @@
 # 06: 按媒体身份选择、确认并持久化正确 SKU 图片
 
-Status: ready-for-agent
+Status: claimed
 Type: bug
 Priority: P1
 Blocked by: 05
