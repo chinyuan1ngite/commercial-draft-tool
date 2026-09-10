@@ -3,7 +3,8 @@
 <div id="guid-skuTable"><table data-codex-sku-table="1"><tbody></tbody></table></div>
 <template id="picker-template">
   <ul><li class="tab-album">Album</li><li class="tab-upload">Upload</li></ul>
-  <input type="file"><div id="progress"></div><div id="album"></div>
+  <input type="file"><input class="album-search"><input class="album-btn" type="button" value="Search">
+  <div id="progress"></div><div id="album"></div>
   <ul class="insert-pool"></ul><div class="ib-footer action"><button class="button submit">Insert</button></div>
   <script>
     const pool = document.querySelector('.insert-pool');
@@ -16,7 +17,8 @@
     }
     function render() {
       const album = document.querySelector('#album'); album.replaceChildren();
-      parent.records.forEach(record => {
+      const query = document.querySelector('.album-search').value;
+      parent.records.filter(record => record.title.includes(query)).forEach(record => {
         const link = document.createElement('a'), image = document.createElement('img');
         link.title = record.title; link.dataset.id = record.id; image.src = record.src;
         image.alt = record.title; link.append(image); link.onclick = () => {
@@ -28,10 +30,16 @@
       parent.uploads++; const file = this.files[0]; const reader = new FileReader();
       reader.onload = () => setTimeout(() => {
         if (parent.options.stall) return;
-        parent.records.push({title:file.name,src:parent.options.corrupt || reader.result,id:'uploaded-'+parent.uploads});
-        successes++; progress(); render();
+        successes++; progress();
+        setTimeout(() => {
+          if (parent.options.omitAlbumRecord) return;
+          const title = parent.options.titleLimit ? file.name.slice(0, parent.options.titleLimit) : file.name;
+          parent.records.push({title,src:parent.options.corrupt || reader.result,id:'uploaded-'+parent.uploads});
+          render();
+        }, parent.options.albumDelay || 0);
       }, parent.options.delay || 0); reader.readAsDataURL(file);
     };
+    document.querySelector('.album-btn').onclick = render;
     document.querySelector('.submit').onclick = () => {
       parent.commits++; const images = [...pool.querySelectorAll('img')];
       parent.commit(parent.activeSku, images.map(image => image.src));

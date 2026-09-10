@@ -56,3 +56,16 @@ Independent media Spec review identified:
 - No live upload, draft save/reopen, formal publish, version bump or binary package was performed.
 
 Tasks 06 and 07 are not complete. These automated results are not a stable-release claim.
+
+## Album Lookup Follow-Up (2026-09-10)
+
+Baseline: 83d0fc4479e43b680dc95ca114d73f8fa078b711. Existing uncommitted 0.4.18 packaging edits were preserved and excluded from this implementation.
+
+Red/green commands use DRAFT_BROWSER_TESTS=1 and the same isolated Chrome fixtures:
+
+- `python -m unittest discover -s tests -p test_browser_dom.py -k truncated -v`: initially indeterminate with uploaded_media_identity_unconfirmed; now confirmed, selecting the correct bytes rather than an identically truncated old title.
+- `python -m unittest discover -s tests -p test_browser_dom.py -k waits_for_album -v`: initially indeterminate when the album appears 2200ms after upload progress; now confirmed with one upload and one commit.
+- `python -m unittest discover -s tests -p test_browser_dom.py -k reports_missing_record -v`: missing record and wrong bytes both remain indeterminate, differentiated by candidate/content-mismatch counts; one upload, no commit in either case.
+- `python -m unittest discover -s tests -p test_media_stage_report.py -v`: three report-boundary tests pass, including preservation of existing stage results and no blocked markers for confirmed media.
+
+The lookup fixes do not solve platform recompression. Reads of the four observed original/thumbnail pairs in the supplied run report did not match local uploaded bytes. The actual successful network read was checked separately from the verifier's false result. No guessed URL rewrite, perceptual acceptance, cookie-bearing capture, or new remote upload was used. Authentic transaction-correlated platform identity evidence remains required; tasks 06/07 are still incomplete.

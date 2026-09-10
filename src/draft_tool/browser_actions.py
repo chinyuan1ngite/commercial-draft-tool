@@ -398,6 +398,19 @@ def sku_image_block_reason(result: dict[str, Any], required: bool = False) -> st
     return None
 
 
+def record_sku_image_block(report: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """Explain unstarted downstream work without relaxing the save gate."""
+    reason = sku_image_block_reason(result)
+    if reason:
+        report['result'] = reason
+        fields = report.setdefault('fields', {})
+        for name, defaults in (('description', {'saved': False}), ('package_dimensions', {'filled': 0})):
+            fields.setdefault(name, {
+                **defaults, 'status': 'not_started', 'blocked_by': 'sku_images', 'reason': reason,
+            })
+    return reason
+
+
 def _resolve_sku_image_row(page: ChromiumPage, sources: list[dict[str, Any]], index: int) -> Any:
     """Reacquire a current node from complete identity, never an old row handle."""
     rendered = read_sku_table_rows(page)
@@ -457,15 +470,34 @@ def _sku_picker_candidates(frame: Any, title: str) -> list[dict[str, str]]:
             return {title: e.title || e.dataset.name || e.dataset.fileName || e.querySelector('img')?.alt || '',
               src: e.querySelector('img')?.src || '', id: e.dataset.id || e.dataset.imageId || '',
               token: e.dataset.codexImageChoice};
-          }).filter(record => norm(record.title) === wanted);
+          }).filter(record => {
+            const title = norm(record.title);
+            // Album titles may be truncated. Names only shortlist candidates;
+            // the caller still requires an exact content identity match.
+            return title === wanted || (title.length >= Math.min(wanted.length, 20) && wanted.startsWith(title));
+          });
     """, title) or [])
 
 
-def _verified_sku_candidate(frame: Any, title: str, digest: str, cache: dict[str, str | None]) -> dict[str, str] | None:
+def _verified_sku_candidate(
+    frame: Any, title: str, digest: str, cache: dict[str, str | None],
+    diagnostics: dict[str, Any] | None = None, deadline: float | None = None,
+) -> dict[str, str] | None:
     candidates = _sku_picker_candidates(frame, title)
+    if diagnostics is not None:
+        diagnostics.update(candidate_count=len(candidates), content_mismatch_count=0, unreadable_count=0)
+        diagnostics['lookup_attempts'] = diagnostics.get('lookup_attempts', 0) + 1
     if len(candidates) > 4:
         raise RuntimeError("too_many_media_candidates")
-    return next((record for record in candidates if verified_image(record, digest, cache)), None)
+    for record in candidates:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        if verified_image(record, digest, cache):
+            return record
+        if diagnostics is not None:
+            key = 'content_mismatch_count' if cache.get(record.get('src', '')) else 'unreadable_count'
+            diagnostics[key] += 1
+    return None
 
 
 def _configure_sku_image_via_picker(
@@ -493,7 +525,7 @@ def _configure_sku_image_via_picker(
     digest = transaction["sha256"]
     known_image = platform_images.get(digest)
     candidate_title = known_image["title"] if known_image else path.stem
-    if _picker_search_title(frame, candidate_title):
+    if _picker_search_title(frame, candidate_title[:20]):
         time.sleep(.7)
     candidate = _verified_sku_candidate(frame, candidate_title, digest, verification_cache)
     if candidate is None and known_image:
@@ -517,8 +549,21 @@ def _configure_sku_image_via_picker(
             raise RuntimeError("upload_completion_unconfirmed")
         transaction["upload_progress_verified"] = True
         frame.run_js("document.querySelector('li.tab-album')?.click();")
-        time.sleep(1)
-        candidate = _verified_sku_candidate(frame, path.stem, digest, verification_cache)
+        _picker_search_title(frame, path.stem[:20])
+        diagnostics: dict[str, Any] = {"search_term": path.stem[:20]}
+        transaction["album_verification"] = diagnostics
+        deadline = time.monotonic() + 8
+        refresh_at = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            candidate = _verified_sku_candidate(
+                frame, path.stem, digest, verification_cache, diagnostics, deadline,
+            )
+            if candidate is not None:
+                break
+            if time.monotonic() >= refresh_at:
+                _picker_search_title(frame, path.stem[:20])
+                refresh_at = time.monotonic() + 2
+            time.sleep(.25)
         if candidate is None:
             raise RuntimeError("uploaded_media_identity_unconfirmed")
     else:
@@ -3439,8 +3484,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"SKU 图片配置失败: {len(report['fields']['sku_images']['failed'])} 个"
             )
         image_result = report["fields"]["sku_images"]
-        if sku_image_block_reason(image_result):
-            report["result"] = sku_image_block_reason(image_result)
+        if record_sku_image_block(report, image_result):
             report["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
             args.output_dir.mkdir(parents=True, exist_ok=True)
             atomic_write(args.output_dir / "report.json", json.dumps(report, ensure_ascii=False, indent=2))

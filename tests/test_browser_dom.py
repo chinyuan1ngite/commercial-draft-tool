@@ -407,6 +407,50 @@ class BrowserDomTests(unittest.TestCase):
         self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'),[1,2])
         self.assertEqual(self.page.run_js('return [...document.querySelectorAll("tr img")].map(e=>e.src)'),[correct,correct])
 
+    def test_picker_finds_truncated_album_title_without_trusting_the_name(self):
+        data, correct = self.image_data('red')
+        _, wrong = self.image_data('blue')
+        name = '998438742174-sku-15-0419a4bd562f.jpg'
+        self.image_fixture({'titleLimit': 28}, [
+            {'title': name[:28], 'src': wrong, 'id': 'old'},
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / name
+            path.write_bytes(data)
+            result = configure_sku_images(self.page, [{'sku_id': 'A'}], {'A': path})
+        self.assertEqual(result['status'], 'confirmed', result)
+        rendered = self.page.run_js('return document.querySelector("tr img").src')
+        self.assertEqual(base64.b64decode(rendered.split(',', 1)[1]), data)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
+
+    def test_picker_waits_for_album_after_upload_progress(self):
+        data, _ = self.image_data('red')
+        self.image_fixture({'albumDelay': 2200})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'pixel.png'
+            path.write_bytes(data)
+            result = configure_sku_images(self.page, [{'sku_id': 'A'}], {'A': path})
+        self.assertEqual(result['status'], 'confirmed', result)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
+
+    def test_picker_reports_missing_record_separately_from_content_mismatch(self):
+        data, _ = self.image_data('red')
+        _, wrong = self.image_data('blue')
+        for options, candidate_count, mismatch_count in (
+            ({'omitAlbumRecord': True}, 0, 0),
+            ({'corrupt': wrong}, 1, 1),
+        ):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as folder:
+                self.image_fixture(options)
+                path = Path(folder) / 'pixel.png'
+                path.write_bytes(data)
+                result = configure_sku_images(self.page, [{'sku_id': 'A'}], {'A': path})
+                self.assertEqual(result['status'], 'indeterminate', result)
+                evidence = result['failed'][0]['album_verification']
+                self.assertEqual(evidence['candidate_count'], candidate_count)
+                self.assertEqual(evidence['content_mismatch_count'], mismatch_count)
+                self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

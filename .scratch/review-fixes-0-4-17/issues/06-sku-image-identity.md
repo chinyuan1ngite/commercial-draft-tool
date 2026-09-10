@@ -54,3 +54,15 @@ Review 已复现：目标图片名会匹配带有额外后缀的旧图，而数�
 仍未满足的验收：当前核验基于可读取的原字节；若真实平台 src 是压缩/转码/缩略图，尚无可信的原图 SHA-256 到平台原素材 ID，再到派生显示图的关联适配。测试使用原字节 data URL，不代表该兼容路径已通过。不能降低哈希校验或仅用名称解决，需要真实页面上传响应/原素材字段证据。保留 claimed，不宣称 AC14-AC17 的全部平台兼容已经完成。
 
 验收环境阻塞：浏览器库存读取返回 `Codex auth token is unavailable`，没有取得可操作的卖家标签页；本地 settings.local.json 未配置 target.category_id、target.store_identity_text、target.delivery_promise。未向真实店铺上传或保存，未绕过发货时间必填，未打包。恢复浏览器连接并明确有效的测试店铺/商品配置后继续验证；已有详情可见编辑器故障仍属于独立范围。
+
+### 2026-09-10 Album Lookup Follow-Up
+
+Baseline: 83d0fc4479e43b680dc95ca114d73f8fa078b711. User confirmed the existing configure_sku_images / verify_sku_images / report test boundaries and this review baseline.
+
+The reported run has 17 locally valid SKU images and five locally valid detail images. The first SKU upload reports progress but cannot confirm an album identity; the early image gate prevents weight and description execution. This is not evidence that detail collection or its editor failed.
+
+Isolated browser regressions reproduce long-name search missing a truncated album title and upload progress preceding album availability. Both now pass: search uses a short prefix, candidate truncation is tolerated only before strict content verification, and a bounded album poll refreshes the search without uploading again. Missing album records and content mismatches now have separate bounded diagnostic counts. The blocked report explicitly marks unstarted weight/detail stages without relaxing the save gate.
+
+Remaining blocker: this run's four main-image records provide observed thumbnail/original URL pairs. Credential-free reads of those exact URLs did not match the local upload SHA-256, including the platform originals (one inspected original returned image/jpeg with 194762 bytes). This establishes a platform byte-identity compatibility gap, not the precise cause of the first SKU failure. Do not guess original URLs or accept image similarity/name as identity. Need a transaction-correlated upload response/platform media ID and the actual picker-to-row association to support processed media safely. No authentic upload response is present in the supplied artifacts; native browser inspection was stopped by the tool's URL-verification policy.
+
+Task remains claimed. No live upload, draft save/reopen, version bump, or new package is part of this follow-up. See verification.md for automated results and review evidence.
