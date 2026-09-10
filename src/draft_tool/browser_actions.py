@@ -1304,30 +1304,21 @@ def fill_freight_template(page: ChromiumPage, preferred: str) -> dict[str, Any]:
     return result
 
 
-def _spec_identity_values(props: Any) -> list[str]:
-    """Return normalized SKU property values in insertion order."""
-    if not isinstance(props, dict):
-        return []
-    return [clean_sku_value(value) for value in props.values() if clean_sku_value(value)]
-
-
-def _spec_identity_key(values: list[str]) -> str:
-    return "\u001f".join(values)
-
-
 def fill_package_weights(
     page: ChromiumPage,
     source_weights: list[dict[str, Any]] | None,
     default_weight_grams: int | None = None,
     source_skus: list[dict[str, Any]] | None = None,
+    *, verify_only: bool = False,
 ) -> dict[str, Any]:
-    """Fill weights only when source data or an explicit default is available.
+    """Plan weights by identity, then fill or verify without positional matching.
 
     The official logistics module stores weight in grams. Dimensions remain blank
     because inventing length/width/height would be less reliable than leaving
     those fields for later manual confirmation.
     """
     configured_weight: int | None = None
+    fallback_source = "default" if default_weight_grams is None else "configured"
     if default_weight_grams is None:
         default_weight_grams = DEFAULT_PACKAGE_WEIGHT_GRAMS
     if default_weight_grams is not None and not isinstance(default_weight_grams, bool):
@@ -1362,11 +1353,19 @@ def fill_package_weights(
         int(item["weight_grams"]) for item in valid_source_weights if not item.get("sku_id")
     ]
     spec_key_to_sku_id: dict[str, str] = {}
+    known_ids = {str(sku.get("sku_id") or "").strip() for sku in source_skus or []}
+    known_ids = (known_ids - {""}) | set(weight_by_sku)
+    aliases: dict[str, set[str]] = {sku_id: {sku_id} for sku_id in known_ids}
+    for sku in source_skus or []:
+        sku_id = str(sku.get("sku_id") or "").strip()
+        code = str(sku.get("merchant_code") or "").strip()
+        if sku_id and code:
+            aliases.setdefault(code, set()).add(sku_id)
     if source_skus:
         grouped_specs: dict[str, list[str]] = {}
         for sku in source_skus:
             sku_id = str(sku.get("sku_id") or "").strip()
-            key = _spec_identity_key(_spec_identity_values(sku.get("properties") or sku.get("specProps")))
+            key = specification_key(sku.get("properties") or sku.get("specProps"))
             if sku_id and key:
                 grouped_specs.setdefault(key, []).append(sku_id)
         for key, sku_ids in grouped_specs.items():
@@ -1391,6 +1390,10 @@ def fill_package_weights(
         "dimensions_filled": 0,
         "status": "control_missing",
     }
+    if any(item["sku_id"] and item["weight_grams"] != weight_by_sku[item["sku_id"]]
+           for item in valid_source_weights):
+        result.update(status="mapping_ambiguous", reason="conflicting_source_weights")
+        return result
     if not valid_source_weights and configured_weight is None:
         result.update(source="none", status="skipped", reason="not_configured")
         return result
@@ -1404,45 +1407,59 @@ def fill_package_weights(
         return result
 
     def row_sku_id(row: Any) -> str:
+        candidates: set[str] = set()
         value = str(
             row.attr("data-sku-id") or row.attr("data-skuid") or row.attr("data-skuId") or ""
         ).strip()
-        if value in weight_by_sku:
-            return value
+        if value in known_ids:
+            candidates.add(value)
         hidden = next(
-            (item for item in row.eles('css:input[type="hidden"]')
+            (item for item in row.eles('css:input[type="hidden"]', timeout=0)
              if re.search(r"sku|货号|编码", str(item.attr("name") or ""), re.I)),
             None,
         )
         if hidden:
             hidden_value = str(hidden.attr("value") or "").strip()
-            if hidden_value in weight_by_sku:
-                return hidden_value
+            if hidden_value in known_ids:
+                candidates.add(hidden_value)
         # Seller rows often expose the source SKU only in the visible
         # merchant-code field, while hiding the platform SKU identity.
-        for item in row.eles('css:input:not([type="hidden"])'):
+        for item in row.eles('css:input:not([type="hidden"])', timeout=0):
             hint = " ".join(str(item.attr(key) or "") for key in ("name", "placeholder", "data-field"))
             if re.search(r"单品货号|商家编码|货号|merchant", hint, re.I):
                 value = str(item.attr("value") or "").strip()
-                if value:
-                    return value
+                if value in aliases:
+                    candidates.update(aliases[value])
         # Some logistics tables expose SKU identity only through the visible
         # specification cells (for example the 颜色 column), not a SKU id or
         # merchant code. Map those cells back to the source SKU id when the
         # specification is unique and unambiguous.
-        spec_key = _spec_identity_key([
-            clean_sku_value((node.text or "").strip())
-            for node in row.eles("css:.sku-field-prop")
-            if (node.text or "").strip()
-        ])
+        props = row.run_js("""
+            const root = this.closest('#guid-officialLogistics');
+            const headers = [...(root?.querySelectorAll('thead th') || [])]
+              .map(node => (node.querySelector('.table-header-label')?.innerText || node.innerText).replace(/^[*\\s]+/, '').trim());
+            const cells = [...this.querySelectorAll('td')];
+            const props = {};
+            for (const node of this.querySelectorAll('.sku-field-prop')) {
+              const cell = node.closest('td');
+              const column = Number(cell?.getAttribute('data-next-table-col') ?? cells.indexOf(cell));
+              const label = headers[column];
+              if (label) props[label] = node.innerText.trim();
+            }
+            return props;
+        """) if source_skus else {}
+        spec_key = specification_key(props) if isinstance(props, dict) else ""
         mapped_sku = spec_key_to_sku_id.get(spec_key)
-        if mapped_sku and mapped_sku in weight_by_sku:
-            return mapped_sku
-        return ""
+        if spec_key and not mapped_sku:
+            return ""
+        if mapped_sku:
+            candidates.add(mapped_sku)
+        return next(iter(candidates)) if len(candidates) == 1 else ""
 
     row_ids = [row_sku_id(row) for row in rows] if weight_by_sku else [""] * len(rows)
     keyed_distinct = {value for value in weight_by_sku.values()}
-    if len(keyed_distinct) > 1:
+    uniform_collected = len(keyed_distinct) == 1 and len(weight_by_sku) >= len(rows) and known_ids.issubset(weight_by_sku)
+    if weight_by_sku and not uniform_collected:
         if any(not value for value in row_ids):
             result.update(status="mapping_ambiguous", reason="target_rows_missing_sku_id")
             return result
@@ -1454,29 +1471,33 @@ def fill_package_weights(
         return result
 
     expected_weights: list[int] = []
+    expected_rows: list[dict[str, Any]] = []
     for row_id in row_ids:
         weight = weight_by_sku.get(row_id) if row_id else None
         if weight is None and common_weight is not None:
             weight = common_weight
-        if weight is None and len(keyed_distinct) == 1 and len(weight_by_sku) >= len(rows):
+        if weight is None and uniform_collected:
             weight = next(iter(keyed_distinct))
         if weight is None and len(unkeyed_weights) == 1:
             weight = unkeyed_weights[0]
+        weight_source = "collected" if weight is not None else fallback_source
         if weight is None:
             weight = configured_weight
         if weight is None:
             result.update(status="mapping_incomplete", reason="source_weight_missing")
             return result
         expected_weights.append(weight)
+        expected_rows.append({"sku_id": row_id, "weight_grams": weight, "source": weight_source})
     result["expected_weights"] = expected_weights
+    result["expected_rows"] = expected_rows
 
     # The module provides a batch field which commits all rows through its
     # React state, avoiding the occasional last-row loss seen with direct input.
-    batch_input = module.ele('css:.measured-image-batch-bar__input input[placeholder="重量"]', timeout=1)
-    batch_submit = module.ele('css:.measured-image-batch-bar__submit', timeout=1)
+    batch_input = None if verify_only else module.ele('css:.measured-image-batch-bar__input input[placeholder="重量"]', timeout=1)
+    batch_submit = None if verify_only else module.ele('css:.measured-image-batch-bar__submit', timeout=1)
     unique_expected = set(expected_weights)
     batch_weight = next(iter(unique_expected)) if len(unique_expected) == 1 else None
-    if batch_input and batch_submit and batch_weight is not None:
+    if not verify_only and batch_input and batch_submit and batch_weight is not None:
         batch_input.input(str(batch_weight), clear=True)
         batch_submit.click()
         time.sleep(.6)
@@ -1513,7 +1534,7 @@ def fill_package_weights(
         )
         weight_grams = expected_weights[index]
         value = str(weight_input.attr('value') or '')
-        if value != str(weight_grams):
+        if value != str(weight_grams) and not verify_only:
             weight_input.input(str(weight_grams), clear=True)
             page.ele('css:#guid-title input', timeout=1).click()
             time.sleep(.15)
@@ -3642,11 +3663,10 @@ def main(argv: list[str] | None = None) -> int:
                     or _compact_text(args.freight_template_text) in _compact_text(reopened.get("freight_template_value"))
                 ),
                 "package_weights": (
-                    not expected_weights
-                    or (len(weights) == len(expected_weights) and all(
-                        same_number(value, expected_weights[index])
-                        for index, value in enumerate(weights)
-                    ))
+                    not expected_weights or fill_package_weights(
+                        page, product.get("package_weights"), args.package_weight_grams,
+                        source_skus=product.get("skus"), verify_only=True,
+                    ).get("status") == "filled"
                 ),
             }
             report["field_reopen_checks"].update(optional_reopen_checks)

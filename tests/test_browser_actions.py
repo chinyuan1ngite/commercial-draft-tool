@@ -380,7 +380,7 @@ class BrowserActionTests(unittest.TestCase):
             state = {"value": ""}
             weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
             weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
-            row.eles.side_effect = lambda selector, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
+            row.eles.side_effect = lambda selector, timeout=0, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
                 [] if selector == 'css:input[type="hidden"]' else [*dimensions, weight_input, code_input]
             )
         module.eles.return_value = rows
@@ -411,7 +411,7 @@ class BrowserActionTests(unittest.TestCase):
             state = {"value": ""}
             weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
             weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
-            row.eles.side_effect = lambda selector, hidden=hidden, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
+            row.eles.side_effect = lambda selector, timeout=0, hidden=hidden, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
                 [hidden] if selector == 'css:input[type="hidden"]' else [*dimensions, weight_input, code_input]
             )
         module.eles.return_value = rows
@@ -442,7 +442,7 @@ class BrowserActionTests(unittest.TestCase):
             state = {"value": ""}
             weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
             weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
-            row.eles.side_effect = lambda selector, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
+            row.eles.side_effect = lambda selector, timeout=0, code_input=code_input, weight_input=weight_input, dimensions=dimensions: (
                 [] if selector == 'css:input[type="hidden"]' else [*dimensions, weight_input, code_input]
             )
         module.eles.return_value = rows
@@ -452,7 +452,7 @@ class BrowserActionTests(unittest.TestCase):
         result = fill_package_weights(page, [
             {"sku_id": "A", "weight_grams": 100},
             {"sku_id": "B", "weight_grams": 200},
-        ])
+        ], source_skus=[{"sku_id": code} for code in ["A", "B", "C"]])
 
         self.assertEqual(result["status"], "filled")
         self.assertEqual(result["expected_weights"], [100, 200, 1000])
@@ -465,6 +465,7 @@ class BrowserActionTests(unittest.TestCase):
         specs = ["【芭比粉】医生收纳盒42件套", "【芭比粉】医生收纳盒65件套"]
         for row, spec in zip(rows, specs):
             row.attr.return_value = ""
+            row.run_js.return_value = {"颜色": spec}
             spec_node = MagicMock()
             spec_node.text = spec
             dimensions = [MagicMock(), MagicMock(), MagicMock()]
@@ -475,7 +476,7 @@ class BrowserActionTests(unittest.TestCase):
             weight_input.attr.side_effect = lambda key, state=state: state["value"] if key == "value" else "重量"
             weight_input.input.side_effect = lambda value, clear=True, state=state: state.update(value=str(value))
 
-            def eles(selector, spec_node=spec_node, dimensions=dimensions, weight_input=weight_input):
+            def eles(selector, timeout=0, spec_node=spec_node, dimensions=dimensions, weight_input=weight_input):
                 if selector == 'css:input[type="hidden"]':
                     return []
                 if selector == 'css:.sku-field-prop':
@@ -509,7 +510,7 @@ class BrowserActionTests(unittest.TestCase):
             row.attr.return_value = ""
             spec_node = MagicMock()
             spec_node.text = "【芭比粉】医生收纳盒42件套"
-            row.eles.side_effect = lambda selector, spec_node=spec_node: (
+            row.eles.side_effect = lambda selector, timeout=0, spec_node=spec_node: (
                 [] if selector == 'css:input[type="hidden"]'
                 else [spec_node] if selector == 'css:.sku-field-prop'
                 else []
@@ -537,7 +538,7 @@ class BrowserActionTests(unittest.TestCase):
             row.attr.return_value = ""
             code = MagicMock()
             code.attr.side_effect = lambda key: "A" if key == "value" else "单品货号"
-            row.eles.side_effect = lambda selector, code=code: (
+            row.eles.side_effect = lambda selector, timeout=0, code=code: (
                 [] if selector == 'css:input[type="hidden"]' else [code]
             )
         module.eles.return_value = rows
