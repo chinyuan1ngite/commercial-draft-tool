@@ -54,24 +54,6 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(slots[1]["label"], "规格")
         self.assertIn("module-spec-decorator", page.run_js.call_args.args[0])
 
-    @patch("draft_tool.browser_actions.add_sale_values", return_value=2)
-    @patch("draft_tool.browser_actions.discover_sale_property_slots", return_value=[
-        {"index": 0, "placeholder": "请输入或选择颜色", "label": "颜色"},
-        {"index": 1, "placeholder": "请输入规格", "label": "规格"},
-    ])
-    def test_add_sale_dimensions_fills_two_distinct_property_slots(self, _discover, _add):
-        model = {
-            "dimensions": [
-                {"name": "颜色", "values": ["莫兰绿", "豆沙紫"]},
-                {"name": "规格", "values": ["标准版", "充电版"]},
-            ]
-        }
-
-        result = add_sale_dimensions(MagicMock(), model)
-
-        self.assertEqual(result["status"], "filled")
-        self.assertEqual(result["accepted_values"], 4)
-
     def test_unexpected_native_dialogs_are_dismissed(self):
         page = MagicMock()
         page.handle_alert.side_effect = ["提示", None]

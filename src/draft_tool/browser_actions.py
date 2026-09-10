@@ -1991,22 +1991,42 @@ def fill_prop(page: ChromiumPage, prop_id: str, value: str) -> bool:
     return False
 
 
-def add_sale_values(page: ChromiumPage, placeholder: str, values: list[str]) -> int:
+def _sale_property_state(page: ChromiumPage, label: str) -> dict[str, Any]:
+    return dict(page.run_js(
+        """
+        const norm = text => String(text || '').replace(/[*:：]/g, '').trim();
+        const boxes = [...document.querySelectorAll('#guid-saleProp .module-spec-decorator')]
+          .filter(box => box.offsetParent !== null && norm(box.querySelector('.nak-label')?.innerText) === arguments[0]);
+        if (boxes.length !== 1) return {values: [], selector: ''};
+        const box = boxes[0];
+        box.setAttribute('data-codex-sale-label', arguments[0]);
+        const inputs = [...box.querySelectorAll('input')].filter(i => i.offsetParent !== null && i.type !== 'hidden');
+        return {values: inputs.map(i => i.value.trim()).filter(Boolean),
+          selector: '#guid-saleProp [data-codex-sale-label=' + CSS.escape(arguments[0]) + ']'};
+        """, label,
+    ) or {})
+
+
+def add_sale_values(page: ChromiumPage, placeholder: str, values: list[str], *, dimension_label: str = "") -> int:
     """Add custom sale-property values and let the page generate the SKU rows."""
     if not values:
         return 0
-    selector = f'#guid-saleProp input[placeholder="{placeholder}"]'
-    value_script = """
-        return Array.from(document.querySelectorAll('#guid-saleProp .module-spec-decorator input'))
-          .map(e => (e.value || '').trim()).filter(Boolean);
-    """
+    if not dimension_label:
+        slots = [slot for slot in discover_sale_property_slots(page) if slot.get("placeholder") == placeholder]
+        if len(slots) != 1:
+            return 0
+        dimension_label = slots[0]["label"]
     for value in values:
         deadline = time.time() + 8
         while time.time() < deadline:
-            current_values = list(page.run_js(value_script) or [])
+            state = _sale_property_state(page, dimension_label)
+            current_values = state.get("values") or []
             if value in current_values:
                 break
-            inputs = page.eles(f"css:{selector}")
+            if not state.get("selector"):
+                return 0
+            inputs = page.eles(f"css:{state['selector']} input:not([type=hidden])")
+            inputs = [item for item in inputs if not str(item.attr("value") or "").strip()]
             if not inputs:
                 break
             target = inputs[-1]
@@ -2014,20 +2034,10 @@ def add_sale_values(page: ChromiumPage, placeholder: str, values: list[str]) -> 
             target.input(value, clear=True)
             page.ele("css:#guid-title input", timeout=2).click()
             time.sleep(.6)
-            if value in list(page.run_js(value_script) or []):
+            if value in (_sale_property_state(page, dimension_label).get("values") or []):
                 break
             time.sleep(.4)
-    # React regenerates the SKU table asynchronously. Wait for both the
-    # committed sale values and the corresponding rows before continuing.
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        committed = list(page.run_js(value_script) or [])
-        table_state = discover_sku_table(page)
-        rows = int((table_state.get("selected") or {}).get("row_count") or 0)
-        if len(committed) >= len(values) and rows >= len(values):
-            break
-        time.sleep(.5)
-    return len(list(page.run_js(value_script) or []))
+    return len(set(values).intersection(_sale_property_state(page, dimension_label).get("values") or []))
 
 
 def discover_sale_property_slots(page: ChromiumPage) -> list[dict[str, Any]]:
@@ -2041,7 +2051,7 @@ def discover_sale_property_slots(page: ChromiumPage) -> list[dict[str, Any]]:
             return {
               index,
               placeholder: (input?.getAttribute('placeholder') || '').trim(),
-              label: ((box.querySelector('.nak-label')?.innerText || '').replace('*', '').trim())
+              label: ((box.querySelector('.nak-label')?.innerText || '').replace(/[*:：]/g, '').trim())
             };
           })
           .filter(slot => slot.placeholder);
@@ -2069,32 +2079,39 @@ def add_sale_dimensions(page: ChromiumPage, model: dict[str, Any]) -> dict[str, 
             "slots": slots,
             "accepted_values": 0,
         }
+    names = [str(dimension.get("name") or "").strip() for dimension in dimensions]
+    if len(set(names)) != len(names) or any(
+        len([slot for slot in slots if slot.get("label") == name]) != 1 for name in names
+    ):
+        return {"status": "unsupported", "reason": "sale_dimension_identity_ambiguous",
+                "dimensions": dimensions, "slots": slots, "accepted_values": 0}
     results = []
-    for index, dimension in enumerate(dimensions):
+    for dimension in dimensions:
         values = [str(value) for value in dimension.get("values") or [] if str(value).strip()]
-        # Reuse the proven input/blur sequence for the first slot. For a second
-        # slot, temporarily scope the same helper to that input's placeholder;
-        # if placeholders are identical, use the positional element directly.
-        placeholder = str(slots[index].get("placeholder") or "")
-        if index == 0 or len({str(item.get("placeholder") or "") for item in slots}) > 1:
-            accepted = add_sale_values(page, placeholder, values)
-        else:
-            accepted = 0
-            for value in values:
-                inputs = page.eles('css:#guid-saleProp input[placeholder*="请输入或选择"]')
-                if len(inputs) <= index:
-                    break
-                target = inputs[index]
-                target.click()
-                target.input(value, clear=True)
-                page.ele("css:#guid-title input", timeout=2).click()
-                time.sleep(.6)
-                accepted += 1
-        results.append({"name": dimension.get("name"), "requested": values, "accepted": accepted})
+        label = str(dimension.get("name") or "").strip()
+        slot = next(slot for slot in slots if slot.get("label") == label)
+        accepted = add_sale_values(page, str(slot.get("placeholder") or ""), values, dimension_label=label)
+        committed = _sale_property_state(page, label).get("values") or []
+        results.append({"name": label, "requested": values, "accepted": accepted,
+                        "valid": len(committed) == len(values) and set(committed) == set(values)})
     accepted_values = sum(int(item["accepted"]) for item in results)
     requested_values = sum(len(item["requested"]) for item in results)
+    expected = [specification_key(row.get("properties")) for row in model.get("rows") or []]
+    if not expected:
+        import itertools
+        expected = [specification_key(dict(zip(names, combo)))
+                    for combo in itertools.product(*(dimension.get("values") or [] for dimension in dimensions))]
+    deadline = time.time() + 10
+    combinations_valid = False
+    while time.time() < deadline and all(item["valid"] for item in results):
+        discover_sku_table(page)
+        actual = [specification_key(row.get("properties")) for row in read_sku_table_rows(page)]
+        combinations_valid = sorted(actual) == sorted(expected)
+        if combinations_valid:
+            break
+        time.sleep(.25)
     return {
-        "status": "filled" if accepted_values == requested_values else "partial",
+        "status": "filled" if accepted_values == requested_values and all(item["valid"] for item in results) and combinations_valid else "partial",
         "dimensions": results,
         "slots": slots,
         "accepted_values": accepted_values,
@@ -2237,6 +2254,8 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
         const headers = headerTable
           ? Array.from(headerTable.querySelectorAll('thead th, thead td')).map(e => (e.innerText || '').trim())
           : [];
+        const saleLabels = new Set([...document.querySelectorAll('#guid-saleProp .nak-label')]
+          .map(node => node.innerText.replace(/[*:：]/g, '').trim()));
         return Array.from(table.querySelectorAll('tbody tr')).filter(row => row.offsetParent !== null).map(row => {
           const cells = Array.from(row.querySelectorAll('td'));
           const inputs = Array.from(row.querySelectorAll('input')).map(input => ({
@@ -2248,9 +2267,11 @@ def read_sku_table_rows(page: ChromiumPage) -> list[dict[str, Any]]:
             header: input.getAttribute('data-codex-field') || headers[cells.indexOf(input.closest('td'))] || ''
           }));
           const values = {};
-          cells.forEach(cell => {
-            const label = (cell.querySelector('[class*="sku"], [class*="spec"]')?.innerText || '').trim();
-            if (label) values[label] = label;
+          cells.forEach((cell, index) => {
+            const label = headers[Number(cell.getAttribute('data-next-table-col') ?? index)];
+            const spec = cell.querySelector('.sku-field-prop');
+            const value = (spec?.innerText || cell.innerText || '').trim();
+            if (label && value && (spec || saleLabels.has(label))) values[label] = value;
           });
            const codeInput = inputs.find(item => {
              const hint = [item.name, item.placeholder, item.header].join(' ');
@@ -2325,6 +2346,8 @@ def match_sku_rows_by_specification(
             sku.get("name") or sku.get("sku_name") or ""
         ]
         rendered_props = rendered.get("properties") or {}
+        if isinstance(props, dict) and props and set(props).issubset(rendered_props):
+            return all(clean_sku_value(value) == clean_sku_value(rendered_props[key]) for key, value in props.items())
         rendered_values = (
             [str(value) for value in rendered_props.values()]
             if isinstance(rendered_props, dict) else []

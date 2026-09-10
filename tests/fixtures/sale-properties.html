@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<div id="guid-title"><input></div>
+<div id="guid-saleProp"></div>
+<div id="guid-skuTable">
+  <table><thead><tr id="headers"></tr></thead></table>
+  <table><tbody id="rows"></tbody></table>
+</div>
+<script>
+window.setup = (names, placeholders, delay) => {
+  window.combinations = [];
+  const root = document.querySelector('#guid-saleProp');
+  const header = document.querySelector('#headers');
+  [...names, 'price', '可售数量', '单品货号'].forEach(name => {
+    const th = document.createElement('th'); th.textContent = name; header.append(th);
+  });
+  const render = () => {
+    const sets = [...root.children].map(box => [...box.querySelectorAll('input[data-committed]')].map(i => i.value));
+    window.combinations = sets.reduce((rows, values) => rows.flatMap(row => values.map(value => [...row, value])), [[]]);
+    document.querySelector('#rows').replaceChildren();
+    for (const values of window.combinations) {
+      const row = document.createElement('tr');
+      for (const value of values) { const td = document.createElement('td'); td.textContent = value; row.append(td); }
+      for (let i = 0; i < 3; i++) {
+        const td = document.createElement('td'); td.append(document.createElement('input')); row.append(td);
+      }
+      document.querySelector('#rows').append(row);
+    }
+  };
+  names.forEach((name, index) => {
+    const box = document.createElement('div'); box.className = 'module-spec-decorator';
+    const label = document.createElement('label'); label.className = 'nak-label'; label.textContent = name; box.append(label);
+    const add = () => {
+      const input = document.createElement('input'); input.placeholder = placeholders?.[index] || name;
+      input.addEventListener('blur', () => {
+        if (!input.value || input.dataset.committed) return;
+        input.dataset.committed = '1'; input.setAttribute('value', input.value);
+        add(); setTimeout(render, delay);
+      });
+      box.append(input);
+    };
+    add(); root.append(box);
+  });
+};
+</script>
