@@ -28,6 +28,20 @@
     }
     document.querySelector('input').onchange = function() {
       parent.uploads++; const file = this.files[0]; const reader = new FileReader();
+      if (parent.options.networkUpload) {
+        const form = new FormData(); form.append('file', file, parent.options.wrongFilename ? 'other.png' : file.name);
+        fetch('https://picman.1688.com/album/ajax/image_upload_ajax.json?_input_charset=UTF-8', {
+          method: 'POST', body: form,
+        }).then(r => r.json()).then(result => {
+          successes++; progress();
+          const record = {title: file.name, src: result.miniImgUrls[0], id: String(result.dataList[0])};
+          parent.records.push(record);
+          select(parent.options.wrongPool || record);
+          if (parent.options.extraSelection) select(parent.options.extraSelection);
+          render();
+        });
+        return;
+      }
       reader.onload = () => setTimeout(() => {
         if (parent.options.stall) return;
         successes++; progress();

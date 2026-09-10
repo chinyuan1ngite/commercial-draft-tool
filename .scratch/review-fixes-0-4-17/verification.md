@@ -79,3 +79,13 @@ Independent review of `git diff 83d0fc4479e43b680dc95ca114d73f8fa078b711...dd201
 ### Spec Review
 
 Independent review of the same range: one pre-existing P1 incomplete requirement, no newly identified definite violation or scope creep. Spec R7 and AC18 still require transaction-specific source-to-platform identity evidence and complete seller/reopen acceptance. Processed platform bytes can still cause indeterminate status and prevent details from executing. Search, polling and not_started reporting are partial repairs, not end-to-end resolution. The new DOM fixture does not establish actual platform search pagination, asynchronous request ordering or processing compatibility. Tasks 06/07 remain incomplete; no release claim is made.
+
+## Correlated Receipt Follow-Up (2026-09-10)
+
+User-supplied upload evidence establishes a single-image success schema with a platform ID and declared original/thumbnail URL pair. Production code uses the endpoint/schema, not the user's particular SKU, image ID or image URL. Unique temporary upload names and multipart filename checks correlate the result to the validated local source. Original source assets are not renamed or changed, and temporary copies are cleaned up. No credentials or complete network packet enter reports.
+
+Red/green: `DRAFT_BROWSER_TESTS=1 python -m unittest discover -s tests -p test_browser_dom.py -k processed_upload_response -v` originally returned indeterminate after an automatically selected processed image. With the receipt path it returns confirmed, one upload/commit, and readback verification succeeds; swapping the displayed image fails. The browser executes a real multipart request with the response fulfilled locally by CDP. It does not contact the seller endpoint or use a seller profile.
+
+Targeted results: four processed-upload tests (including parameterized invalid-response and pool cases) pass; seven original picker regressions and seven fault-boundary regressions pass. Syntax validation passes. Full integration and independent two-axis review results follow below when complete.
+
+Limitations remain explicit: genuine cross-origin seller-frame behavior, full details/save/reopen and persistent store-scoped reuse between runs have not been accepted. Within one configure call, identical media across SKUs uploads once; report-carried receipts support read-only reopen verification. No claim of persistent ledger idempotency or processed direct-file-input support is made.

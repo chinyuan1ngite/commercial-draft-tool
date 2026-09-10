@@ -25,6 +25,7 @@ from .browser_navigation import PopupRecoveryError, dismiss_unexpected_popups, n
 from .media import resolve_sku_image_paths as _resolve_sku_image_paths
 from .media import specification_key
 from .media_verification import verified_image
+from .sku_upload import upload_with_receipt
 from .config import DEFAULT_PACKAGE_WEIGHT_GRAMS
 from .sku_adapter import clean_sku_value, normalize_sku_model, validate_target_rows
 from .security import MAX_IMAGE_BYTES, atomic_write
@@ -248,7 +249,7 @@ def configure_sku_images(
     if not sku_image_paths:
         return result
     verification_cache: dict[str, str | None] = {}
-    platform_images: dict[str, dict[str, str]] = {}
+    platform_images: dict[str, dict[str, Any]] = {}
     for source_index, source in enumerate(source_skus):
         sku_id = str(source.get("sku_id") or "").strip()
         path = sku_image_paths.get(sku_id) or sku_image_paths.get(
@@ -278,7 +279,11 @@ def configure_sku_images(
             if media_ref.startswith("sha256:") and media_ref != f"sha256:{digest}":
                 raise RuntimeError("local_media_identity_mismatch")
             transaction.update(media_ref=media_ref, sha256=digest)
-            already_correct = len(existing) == 1 and verified_image(existing[0], digest, verification_cache)
+            known_image = platform_images.get(digest) or {}
+            if known_image.get('receipt'):
+                transaction['upload_receipt'] = known_image['receipt']
+            already_correct = len(existing) == 1 and verified_image(
+                existing[0], digest, verification_cache, transaction.get('upload_receipt'))
             if already_correct:
                 transaction["reused"] = True
             elif file_input:
@@ -296,7 +301,7 @@ def configure_sku_images(
                     time.sleep(.1)
                     continue
                 records = _sku_row_image_records(row)
-                if len(records) == 1 and verified_image(records[0], digest, verification_cache):
+                if len(records) == 1 and verified_image(records[0], digest, verification_cache, transaction.get('upload_receipt')):
                     transaction["platform_image"] = records[0]
                     transaction["status"] = "confirmed"
                     break
@@ -311,7 +316,7 @@ def configure_sku_images(
                 try:
                     current = _resolve_sku_image_row(page, source_skus, source_index)
                     records = _sku_row_image_records(current)
-                    if len(records) == 1 and verified_image(records[0], transaction["sha256"], verification_cache):
+                    if len(records) == 1 and verified_image(records[0], transaction["sha256"], verification_cache, transaction.get('upload_receipt')):
                         transaction.update(status="confirmed", reconciled=True, platform_image=records[0])
                 except Exception:
                     pass
@@ -383,7 +388,7 @@ def verify_sku_images(page: ChromiumPage, sources: list[dict[str, Any]], configu
                 raise RuntimeError("reopen_source_identity_ambiguous")
             row = _resolve_sku_image_row(page, sources, candidates[0])
             records = _sku_row_image_records(row)
-            check["verified"] = len(records) == 1 and verified_image(records[0], transaction["sha256"], cache)
+            check["verified"] = len(records) == 1 and verified_image(records[0], transaction["sha256"], cache, transaction.get('upload_receipt'))
         except Exception as exc:
             check["error"] = f"{type(exc).__name__}: {exc}"
         checks.append(check)
@@ -458,10 +463,11 @@ def _close_sku_picture_picker(page: ChromiumPage) -> None:
     raise RuntimeError("picker_cleanup_not_confirmed")
 
 
-def _sku_picker_candidates(frame: Any, title: str) -> list[dict[str, str]]:
+def _sku_picker_candidates(frame: Any, title: str, receipt: dict[str, Any] | None = None) -> list[dict[str, str]]:
     return list(frame.run_js("""
         const norm = value => String(value || '').trim().replace(/[.](?:jpe?g|png|webp)$/i, '');
         const wanted = norm(arguments[0]);
+        const receipt = JSON.parse(arguments[1]);
         const nodes = [...new Set([...document.querySelectorAll('a[title], a img[alt], a[data-name], a[data-file-name]')]
           .map(e => e.matches('a') ? e : e.closest('a')))];
         return nodes.filter(e => e && e.getClientRects().length && !e.closest('.insert-pool'))
@@ -471,19 +477,21 @@ def _sku_picker_candidates(frame: Any, title: str) -> list[dict[str, str]]:
               src: e.querySelector('img')?.src || '', id: e.dataset.id || e.dataset.imageId || '',
               token: e.dataset.codexImageChoice};
           }).filter(record => {
+            if (receipt) return [receipt.original_url, receipt.thumbnail_url].includes(record.src);
             const title = norm(record.title);
             // Album titles may be truncated. Names only shortlist candidates;
             // the caller still requires an exact content identity match.
             return title === wanted || (title.length >= Math.min(wanted.length, 20) && wanted.startsWith(title));
           });
-    """, title) or [])
+    """, title, json.dumps(receipt)) or [])
 
 
 def _verified_sku_candidate(
     frame: Any, title: str, digest: str, cache: dict[str, str | None],
     diagnostics: dict[str, Any] | None = None, deadline: float | None = None,
+    receipt: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
-    candidates = _sku_picker_candidates(frame, title)
+    candidates = _sku_picker_candidates(frame, title, receipt)
     if diagnostics is not None:
         diagnostics.update(candidate_count=len(candidates), content_mismatch_count=0, unreadable_count=0)
         diagnostics['lookup_attempts'] = diagnostics.get('lookup_attempts', 0) + 1
@@ -492,7 +500,7 @@ def _verified_sku_candidate(
     for record in candidates:
         if deadline is not None and time.monotonic() >= deadline:
             break
-        if verified_image(record, digest, cache):
+        if verified_image(record, digest, cache, receipt):
             return record
         if diagnostics is not None:
             key = 'content_mismatch_count' if cache.get(record.get('src', '')) else 'unreadable_count'
@@ -503,7 +511,7 @@ def _verified_sku_candidate(
 def _configure_sku_image_via_picker(
     page: ChromiumPage, row: Any, path: Path, transaction: dict[str, Any],
     verification_cache: dict[str, str | None],
-    platform_images: dict[str, dict[str, str]],
+    platform_images: dict[str, dict[str, Any]],
 ) -> bool:
     """Upload or select one SKU image through the row-level picture picker."""
     add_button = row.ele('css:.sku-picture-content, .sku-picture-url', timeout=2)
@@ -524,10 +532,11 @@ def _configure_sku_image_via_picker(
     _picker_clear_pool(frame)
     digest = transaction["sha256"]
     known_image = platform_images.get(digest)
+    receipt = known_image.get('receipt') if known_image else None
     candidate_title = known_image["title"] if known_image else path.stem
     if _picker_search_title(frame, candidate_title[:20]):
         time.sleep(.7)
-    candidate = _verified_sku_candidate(frame, candidate_title, digest, verification_cache)
+    candidate = _verified_sku_candidate(frame, candidate_title, digest, verification_cache, receipt=receipt)
     if candidate is None and known_image:
         raise RuntimeError("confirmed_platform_image_not_available")
     if candidate is None:
@@ -536,39 +545,47 @@ def _configure_sku_image_via_picker(
         file_input = frame.ele('css:input[type="file"]', timeout=3)
         if not file_input:
             return False
-        previous_successes = _picker_upload_success_count(frame)
-        transaction["stage"] = "upload"
-        transaction["side_effect_possible"] = True
-        file_input.input(str(path.resolve()))
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            if _picker_upload_success_count(frame) > previous_successes:
-                break
-            time.sleep(.4)
-        else:
-            raise RuntimeError("upload_completion_unconfirmed")
-        transaction["upload_progress_verified"] = True
+        receipt = upload_with_receipt(frame, file_input, path, digest, transaction, _picker_upload_success_count)
+        if receipt:
+            transaction['upload_receipt'] = receipt
+            transaction['stage'] = 'selection'
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                pool = _picker_pool_records(frame)
+                if pool:
+                    if len(pool) == 1 and pool[0].get('loaded') is False:
+                        time.sleep(.1)
+                        continue
+                    if len(pool) != 1 or not verified_image(pool[0], digest, verification_cache, receipt):
+                        raise RuntimeError('selection_pool_identity_mismatch')
+                    platform_images[digest] = {**pool[0], 'receipt': receipt}
+                    transaction['selected_platform_image'] = {'src': pool[0]['src'], 'id': receipt['id']}
+                    transaction.update(stage='submit', side_effect_possible=True)
+                    return _picker_submit(frame)
+                time.sleep(.1)
+            raise RuntimeError('uploaded_selection_pool_unconfirmed')
+        candidate_title = Path(transaction['upload_filename']).stem
         frame.run_js("document.querySelector('li.tab-album')?.click();")
-        _picker_search_title(frame, path.stem[:20])
-        diagnostics: dict[str, Any] = {"search_term": path.stem[:20]}
+        _picker_search_title(frame, candidate_title[:20])
+        diagnostics: dict[str, Any] = {"search_term": candidate_title[:20]}
         transaction["album_verification"] = diagnostics
         deadline = time.monotonic() + 8
         refresh_at = time.monotonic() + 2
         while time.monotonic() < deadline:
             candidate = _verified_sku_candidate(
-                frame, path.stem, digest, verification_cache, diagnostics, deadline,
+                frame, candidate_title, digest, verification_cache, diagnostics, deadline,
             )
             if candidate is not None:
                 break
             if time.monotonic() >= refresh_at:
-                _picker_search_title(frame, path.stem[:20])
+                _picker_search_title(frame, candidate_title[:20])
                 refresh_at = time.monotonic() + 2
             time.sleep(.25)
         if candidate is None:
             raise RuntimeError("uploaded_media_identity_unconfirmed")
     else:
         transaction["reused"] = True
-    platform_images[digest] = candidate
+    platform_images[digest] = {**candidate, 'receipt': receipt}
     transaction["stage"] = "selection"
     _picker_clear_pool(frame)
     selected = frame.run_js("""
@@ -580,7 +597,7 @@ def _configure_sku_image_via_picker(
     if not selected:
         raise RuntimeError("media_candidate_replaced")
     pool = _picker_pool_records(frame)
-    if len(pool) != 1 or not verified_image(pool[0], digest, verification_cache):
+    if len(pool) != 1 or not verified_image(pool[0], digest, verification_cache, receipt):
         raise RuntimeError("selection_pool_identity_mismatch")
     transaction["selected_platform_image"] = {key: candidate[key] for key in ("src", "id")}
     transaction["stage"] = "submit"
@@ -844,7 +861,8 @@ def _picker_pool_records(frame: Any) -> list[dict[str, str]]:
           const img = li.querySelector('img');
           return {
             title: String(link?.title || img?.alt || ''),
-            src: String(img?.src || img?.getAttribute('data-src') || '')
+            src: String(img?.src || img?.getAttribute('data-src') || ''),
+            loaded: Boolean(img?.complete && img?.naturalWidth > 0)
           };
         });
         """

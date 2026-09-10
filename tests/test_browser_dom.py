@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import time
 import unittest
+from contextlib import contextmanager
 from urllib.parse import quote
 
 from DrissionPage import ChromiumOptions, ChromiumPage
@@ -450,6 +451,85 @@ class BrowserDomTests(unittest.TestCase):
                 self.assertEqual(evidence['candidate_count'], candidate_count)
                 self.assertEqual(evidence['content_mismatch_count'], mismatch_count)
                 self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
+
+    @contextmanager
+    def processed_upload_fixture(self, options=None, response_changes=None, skus=None):
+        processed, _ = self.image_data('pink')
+        original = 'https://cbu01.alicdn.com/img/ibank/test-processed.jpg'
+        thumbnail = 'https://cbu01.alicdn.com/img/ibank/test-processed.summ.jpg'
+        response = {'result': 'success', 'imgUrls': [original], 'miniImgUrls': [thumbnail], 'dataList': [59814487060]}
+        response.update(response_changes or {})
+        self.image_fixture({'networkUpload': True, **(options or {})}, skus=skus)
+        def fulfill(**event):
+            url = event['request']['url']
+            content = json.dumps(response).encode() if url.startswith('https://picman.1688.com/') else processed
+            self.page.run_cdp('Fetch.fulfillRequest', requestId=event['requestId'], responseCode=200,
+                responseHeaders=[{'name': 'Content-Type', 'value': 'application/json' if url.startswith('https://picman.') else 'image/png'},
+                                 {'name': 'Access-Control-Allow-Origin', 'value': '*'}],
+                body=base64.b64encode(content).decode())
+        self.page.driver.set_callback('Fetch.requestPaused', fulfill)
+        self.page.run_cdp('Fetch.enable', patterns=[{'urlPattern': 'https://picman.1688.com/*'},
+                                                   {'urlPattern': 'https://cbu01.alicdn.com/*'}])
+        try:
+            yield response
+        finally:
+            self.page.run_cdp('Fetch.disable')
+            self.page.driver.set_callback('Fetch.requestPaused', None)
+
+    def test_processed_upload_response_confirms_auto_selected_image_and_reopen(self):
+        data, _ = self.image_data('red')
+        with self.processed_upload_fixture():
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'local.png'
+                path.write_bytes(data)
+                result = configure_sku_images(self.page, [{'sku_id': 'A'}], {'A': path})
+            self.assertEqual(result['status'], 'confirmed', result)
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
+            self.assertTrue(verify_sku_images(self.page, [{'sku_id': 'A'}], result)['verified'])
+            _, wrong = self.image_data('blue')
+            self.page.run_js('document.querySelector("tr img").src=arguments[0]', wrong)
+            self.assertFalse(verify_sku_images(self.page, [{'sku_id': 'A'}], result)['verified'])
+
+    def test_processed_upload_rejects_unrelated_request_and_ambiguous_response(self):
+        data, _ = self.image_data('red')
+        for options, changes, reason in (
+            ({'wrongFilename': True}, {}, 'sku_upload_request_identity_unconfirmed'),
+            ({}, {'dataList': [1, 2]}, 'sku_upload_response_ambiguous'),
+            ({}, {'result': 'failed'}, 'sku_upload_response_failed'),
+            ({}, {'imgUrls': ['https://example.org/wrong.jpg']}, 'sku_upload_response_invalid'),
+        ):
+            with self.subTest(reason=reason), self.processed_upload_fixture(options, changes), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'local.png'
+                path.write_bytes(data)
+                result = configure_sku_images(self.page, [{'sku_id': 'A'}], {'A': path})
+                self.assertEqual(result['status'], 'indeterminate', result)
+                self.assertEqual(result['failed'][0]['reason'], reason)
+                self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
+                self.assertNotIn('upload_receipt', result['transactions'][0])
+
+    def test_processed_upload_refuses_wrong_or_extra_selection(self):
+        data, _ = self.image_data('red')
+        _, wrong = self.image_data('blue')
+        for key in ('wrongPool', 'extraSelection'):
+            with self.subTest(key=key), self.processed_upload_fixture({key: {'title': 'wrong', 'src': wrong}}), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'local.png'
+                path.write_bytes(data)
+                result = configure_sku_images(self.page, [{'sku_id': 'A'}], {'A': path})
+                self.assertEqual(result['status'], 'indeterminate', result)
+                self.assertEqual(result['failed'][0]['reason'], 'selection_pool_identity_mismatch')
+                self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 0])
+
+    def test_processed_upload_is_reused_for_second_sku(self):
+        data, _ = self.image_data('red')
+        with self.processed_upload_fixture(skus=['A', 'B']), tempfile.TemporaryDirectory() as folder:
+            paths = {sku: Path(folder) / (sku + '.png') for sku in ('A', 'B')}
+            for path in paths.values():
+                path.write_bytes(data)
+            sources = [{'sku_id': 'A'}, {'sku_id': 'B'}]
+            result = configure_sku_images(self.page, sources, paths)
+            self.assertEqual(result['status'], 'confirmed', result)
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 2])
+            self.assertTrue(verify_sku_images(self.page, sources, result)['verified'])
 
 
 if __name__ == "__main__":

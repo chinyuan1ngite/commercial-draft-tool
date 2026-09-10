@@ -6,14 +6,18 @@ import hashlib
 from typing import Any
 
 from .security import IMAGE_HOSTS, MAX_IMAGE_BYTES, read_allowlisted_url
+from .sku_upload import matches_receipt
 
 
-def verified_image(record: dict[str, Any], digest: str, cache: dict[str, str | None]) -> bool:
+def verified_image(record: dict[str, Any], digest: str, cache: dict[str, str | None],
+                   receipt: dict[str, Any] | None = None) -> bool:
     if record.get("loaded") is False:
         return False
     src = str(record.get("src") or "")
     if not src:
         return False
+    if matches_receipt(record, digest, receipt):
+        return True
     if src not in cache:
         try:
             if src.startswith("data:image/"):
