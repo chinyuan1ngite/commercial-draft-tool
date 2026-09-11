@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.24 - 2026-09-11 (Validation Build)
+
+- Validation: 175 tests passed, including 56 isolated Chrome tests.
+- Waited through the detail picker's initial `about:blank` document until the real picture-manager controls are available in the cross-origin iframe target.
+- Prevented the observed prepare-stage `ContextLostError` that left a saved text component with five requested images, zero inserted images and zero visible preview images.
+- Added a deterministic dual-origin Chrome regression that fails on 0.4.23 and passes twice with this repair.
+- Preserved upload receipt, media identity, source order, visible-preview confirmation and indeterminate-side-effect safeguards.
+
 ## 0.4.23 - 2026-09-11 (Validation Build)
 
 - Validation: 174 tests passed, including 55 isolated Chrome tests.

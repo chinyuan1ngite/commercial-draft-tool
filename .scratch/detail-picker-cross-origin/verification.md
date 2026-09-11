@@ -27,4 +27,20 @@ Baseline: 83c8d66
 - All 15 detail-related browser tests passed in 89.822 seconds, including upload
   receipt, album reuse, iframe replacement, source-order and preview verification.
 
-Full-suite and package verification results are added after the release build.
+## Release verification
+
+- Non-browser suite: 175 tests discovered, 119 passed and 56 opt-in browser
+  tests skipped in 1.143 seconds.
+- Full suite: 175 tests passed in 315.771 seconds, including 56 isolated
+  Chrome tests.
+- Offline PyInstaller build completed for 0.4.24 after Tcl initialization passed.
+- Packaged ZIP: 21 files and 29,304,560 bytes; archive CRCs, required files and
+  path-safety checks passed.
+- ZIP SHA256: BA2242BDE8F27F1C319C1B74284071985F1476F66110363EEB584BE10811705A.
+- Executable SHA256: 130E2FFC54057ED45DA2B61953BA5E4EFBC756361A5A50D4E6411C85793F584A;
+  it matches the packaged `SHA256SUMS.txt`.
+- The extracted executable passed `--smoke-test` with version 0.4.24 and an
+  isolated runtime, plus `--cli --help`.
+- The previous 0.4.23 ZIP still has SHA256
+  75C470D83A54B2C5ED8D211E5C7AC6BE19E506F47D4FE016499863C130E0CDA8.
+- Machine-readable result: `.local/package-verification-0.4.24.json`.
