@@ -105,13 +105,16 @@ def navigate_with_alert_recovery(page: Any, url: str) -> str | None:
     for attempt in range(2):
         dismiss_pending_alert(page)
         try:
-            page.get(url)
+            if page.get(url) is False:
+                raise PopupRecoveryError('navigation_not_completed')
             return dismiss_pending_alert(page)
         except Exception as exc:
             last_error = exc
-            if not is_alert_exists_error(exc) or attempt:
+            if not is_alert_exists_error(exc):
                 raise
             dismiss_pending_alert(page)
+            if attempt:
+                raise PopupRecoveryError('navigation_blocked_by_native_dialog') from exc
             time.sleep(0.5)
     if last_error:
         raise last_error

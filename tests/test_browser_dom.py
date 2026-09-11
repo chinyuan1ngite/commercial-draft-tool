@@ -16,6 +16,7 @@ from PIL import Image
 
 from draft_tool.browser_actions import add_sale_dimensions, fill_package_weights, fill_prop, fill_sku_rows, selected_prop_value
 from draft_tool.browser_navigation import PopupRecoveryError, dismiss_pending_alert, dismiss_unexpected_popups
+from draft_tool.browser_navigation import navigate_with_alert_recovery
 from draft_tool.browser_actions import configure_sku_images, sku_image_block_reason, fill_legacy_description_editor, verify_sku_images
 from draft_tool.browser_actions import insert_detail_images, fill_description_components, preview_result, description_block_reason
 
@@ -241,6 +242,22 @@ class BrowserDomTests(unittest.TestCase):
         time.sleep(.1)
         dismiss_pending_alert(self.page)
         self.assertIs(self.page.run_js('return window.accepted'), False)
+
+    def test_navigation_reports_persistent_leave_dialog_without_raw_error(self):
+        self.load('<button id="start">Start</button>')
+        self.page.run_js('''document.querySelector('#start').onclick = () => {
+            window.onbeforeunload = event => { event.preventDefault(); event.returnValue = ''; };
+        };''')
+        self.page.ele('css:#start').click()
+        previous_timeout = self.page.timeouts.page_load
+        self.page.set.timeouts(page_load=2)
+        try:
+            with self.assertRaisesRegex(PopupRecoveryError, 'navigation_blocked_by_native_dialog'):
+                navigate_with_alert_recovery(self.page, 'data:text/html,<title>Other page</title>')
+        finally:
+            dismiss_pending_alert(self.page)
+            self.page.run_js('window.onbeforeunload=null')
+            self.page.set.timeouts(page_load=previous_timeout)
 
     def test_continuous_native_dialogs_fail_within_limit(self):
         self.load('<html><body>dialog fixture</body></html>')

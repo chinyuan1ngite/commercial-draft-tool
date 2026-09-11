@@ -11,6 +11,7 @@ import hashlib
 import html as html_lib
 import json
 import re
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -815,9 +816,22 @@ def collect_with_browser(url: str, profile_dir: Path, wait_seconds: int) -> tupl
     profile_dir.mkdir(parents=True, exist_ok=True)
     options = ChromiumOptions()
     options.set_user_data_path(str(profile_dir.resolve()))
+    # The seller preview may already own DrissionPage's default port. Preserve
+    # the buyer profile while allocating a separate browser connection.
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        options.set_local_port(listener.getsockname()[1])
     options.headless(False)
-    page = ChromiumPage(options)
     try:
+        browser_page = ChromiumPage(options)
+    except Exception as exc:
+        raise CollectionError(
+            f"无法启动独立采集浏览器（{type(exc).__name__}）；请检查 Chrome 或采集配置是否被占用"
+        ) from exc
+    try:
+        # A restored tab can veto navigation with beforeunload on every retry.
+        # A fresh tab avoids discarding or accepting prompts on that old page.
+        page = browser_page.browser.new_tab()
         _navigate_with_alert_recovery(page, validate_url(url))
         try:
             page.wait.load_start()
@@ -836,7 +850,7 @@ def collect_with_browser(url: str, profile_dir: Path, wait_seconds: int) -> tupl
         return str(page.url), html, body_text
     finally:
         try:
-            page.quit()
+            browser_page.quit()
         except Exception:
             pass
 
