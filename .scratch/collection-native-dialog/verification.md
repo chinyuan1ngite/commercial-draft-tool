@@ -34,4 +34,16 @@ Baseline: 4aac3db
 
 No real browser session, store upload, draft save or publish was performed.
 Debug scripts stay under `.local`; no debugging instrumentation enters production.
-Full-suite, review and package evidence will follow.
+
+## Final validation
+
+- Full suite: 172 tests passed in 285.425s, including 53 isolated Chrome DOM tests.
+- Standards and specification reviews of 4aac3db...2d58f98 each reported zero findings.
+- Offline PyInstaller build completed for 0.4.22, with Tcl initialization checked.
+- Packaged ZIP: 19 files, 29,299,053 bytes; all CRCs and required files verified.
+- ZIP SHA256: ADADEA9C9CC0CE59B18B168701481328F83881EF09EBAF728757D727C9A2B4BF.
+- Executable SHA256: FDFD65F6C0C848CA29382247AB87543BBF004654B3136A5A1E7077686D0077C7;
+  matches the internal SHA256SUMS.txt.
+- Extracted executable passed --smoke-test (version 0.4.22, isolated runtime)
+  and --cli --help. Package contains no user configuration, profiles or collected data.
+- Full machine-readable verification: `.local/package-verification-0.4.22.json`.

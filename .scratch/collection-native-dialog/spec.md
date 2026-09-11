@@ -1,7 +1,7 @@
 # Collection navigation blocked by native dialogs
 
 Date: 2026-09-11
-Status: claimed
+Status: resolved
 Review baseline: 4aac3db
 
 Continue the user-authorized repair/test/package workflow for the supplied

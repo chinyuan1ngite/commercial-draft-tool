@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.22 - 2026-09-11 (Validation Build)
+
+- Validation: 172 tests passed, including 53 isolated Chrome DOM tests; independent Standards and Spec reviews have no findings.
+
+- Allocated a separate available browser debugging port for collection while preserving the configured buyer profile, avoiding attachment to the seller's default-port session.
+- Collected in a fresh tab so a restored page's recurring leave confirmation cannot block source navigation.
+- Converted exhausted native-dialog retries and explicit navigation failure into controlled errors handled by the collection CLI.
+- Reported collection-browser startup failures without leaking an unhandled browser-library traceback.
+- Reproduced the reported navigation stack with a persistent beforeunload dialog; the original report does not identify the actual dialog type.
+
 ## 0.4.21 - 2026-09-11 (Validation Build)
 
 - Cancelled the known property-application modal before continuing seller-page actions, including dialogs without a close button.
