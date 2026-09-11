@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.21 - 2026-09-11 (Validation Build)
+
+- Cancelled the known property-application modal before continuing seller-page actions, including dialogs without a close button.
+- Required a unique enabled Cancel control and verified the blocking dialog closed; unavailable cancellation stops the workflow.
+- Kept active image pickers and schema editors protected during popup recovery.
+- Refused writes to a hidden legacy editor, preventing invisible fallback content from being mistaken for visible detail progress.
+- Reproduced the user-reported empty component result with the observed blocking overlay; cancelling that overlay restored isolated text and image insertion.
+- Validation: 169 tests passed, including 51 isolated Chrome DOM tests; independent Standards and Spec reviews have no findings.
+- Real seller upload/save/reopen acceptance and unrelated SKU/required-field errors remain outside this validation result.
+
 ## 0.4.20 - 2026-09-11 (Validation Build)
 
 - Inserted detail images through correlated upload receipts and the verified automatic selection, even when the album has not refreshed or titles are truncated.

@@ -1,7 +1,7 @@
 # Detail editor blocked by property application overlay
 
 Date: 2026-09-11
-Status: claimed
+Status: resolved
 Review baseline: 839415d
 
 Continuation of the user-authorized detail-image repair and validation package.

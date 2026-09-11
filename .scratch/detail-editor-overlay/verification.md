@@ -50,3 +50,30 @@ The saved real-page artifacts and isolated replay establish this blocker. No rea
 seller interaction, upload, draft save or reopen was performed during diagnosis.
 Native frame-detach warnings and other reported SKU/required-field issues are not
 claimed resolved by this bounded repair. Final test/review/package evidence follows.
+
+## Full suite and independent review
+
+- `DRAFT_BROWSER_TESTS=1 python -m unittest discover -s tests -v`: 169 tests
+  passed in 263.294s, exit code 0, including 51 isolated Chrome DOM tests.
+- Log: `.local/full-suite-0.4.21.log`. Syntax validation and diff check passed.
+- Independent Standards review of `839415d...d32e463`: 0 findings, no documented
+  breaches or actionable baseline smells. Independent Spec review: 0 findings,
+  no missing implementation requirements or scope creep. Packaging remained the
+  delivery step after review.
+
+## Final reproduction and package
+
+- Re-ran `.local/diagnose_detail_overlay.py --overlay` with the caller's existing
+  popup-recovery step: passed in 9.464s. It reported property_application_cancelled:1,
+  confirmed text and one image, and no property application submission. Debug
+  artifacts remain in `.local`; no debug instrumentation was added to production.
+- Built 0.4.21 with `scripts/build.ps1` in the previously verified Tcl-capable
+  environment, using existing local dependencies and PIP_NO_INDEX=1. Build exit 0.
+- `dist/Commercial1688DraftTool-0.4.21-win64.zip`: 29,295,884 bytes, 18 entries.
+- Archive SHA-256: `BCE516F50C4AC81F2E8971F636F4A4C0F942E100523F6B8F72F3FC3E66FA175D`.
+- EXE SHA-256: `2D95504DEAEB0BF0C6FCFECE01838DD51F716E04DA28D62354F40F731412B328`.
+- CRCs, required files, version, executable digest and absence of runtime data
+  passed `.local/verify_release_0_4_21.py`. Extracted EXE --smoke-test returned
+  version 0.4.21 in a fresh isolated runtime; --cli --help exited 0.
+- Detailed result: `.local/package-verification-0.4.21.json`. Old versioned
+  packages are preserved; no real seller upload/save/reopen was performed.
