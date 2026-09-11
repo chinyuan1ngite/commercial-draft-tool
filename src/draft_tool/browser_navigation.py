@@ -47,23 +47,48 @@ def dismiss_unexpected_popups(page: Any, max_native: int = 3) -> list[str]:
     dismissed = _dismiss_native_dialogs(page, max_native)
     try:
         closed = page.run_js(
-            """
+            r"""
             const active = node =>
               Boolean(node.closest('.ibank-picker-dialog')) ||
               Boolean(node.closest('.ant-modal, .next-dialog, .ui-dialog')?.querySelector('iframe.picker-frame, iframe[src*="schema"]'));
             const visible = node => node.getClientRects().length &&
               getComputedStyle(node).visibility !== 'hidden' && getComputedStyle(node).display !== 'none';
             let count = 0;
+            const propertyDialogs = [...document.querySelectorAll('.cat-prop-apply-modal')]
+              .filter(node => visible(node) && !active(node));
+            let propertyCancelled = 0;
+            for (const dialog of propertyDialogs) {
+              const cancel = [...dialog.querySelectorAll('button')].filter(button =>
+                visible(button) && !button.disabled && button.getAttribute('aria-disabled') !== 'true' &&
+                button.innerText.replace(/\s/g, '') === '取消');
+              if (cancel.length === 1) { cancel[0].click(); propertyCancelled++; }
+            }
             Array.from(document.querySelectorAll(
               '.next-dialog-close, .ant-modal-close, .ui-dialog-close, .window-action-close'
             )).forEach(node => {
               if (visible(node) && !active(node)) { node.click(); count++; }
             });
-            return count;
+            return {closed: count, property_seen: propertyDialogs.length, property_cancelled: propertyCancelled};
             """
         )
+        if isinstance(closed, dict):
+            if closed.get('property_seen'):
+                deadline = time.monotonic() + 2
+                while page.run_js("""
+                    return [...document.querySelectorAll('.cat-prop-apply-modal')].some(node =>
+                        node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden' &&
+                        !node.querySelector('iframe.picker-frame, iframe[src*="schema"]'));
+                """):
+                    if time.monotonic() >= deadline:
+                        raise PopupRecoveryError('property_application_dialog_still_open')
+                    time.sleep(.1)
+            if closed.get('property_cancelled'):
+                dismissed.append(f"property_application_cancelled:{closed['property_cancelled']}")
+            closed = closed.get('closed', 0)
         if isinstance(closed, int) and closed:
             dismissed.append(f"unrelated_overlays_closed:{closed}")
+    except PopupRecoveryError:
+        raise
     except Exception as exc:
         raise PopupRecoveryError("overlay_recovery_failed") from exc
     return dismissed

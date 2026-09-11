@@ -1968,6 +1968,13 @@ def fill_legacy_description_editor(
     result: dict[str, Any] = {"text_component": False, "text_saved": False,
         "saved": False, "retry_allowed": True, "preview": "", "fallback": "legacy"}
     try:
+        if not page.run_js("""
+            const frame = document.querySelector('#tinyMCE-0_ifr');
+            return Boolean(frame && frame.getClientRects().length &&
+                getComputedStyle(frame).visibility !== 'hidden');
+        """):
+            result.update(status='unsupported', reason='legacy_editor_not_visible')
+            return result
         frame = page.get_frame("css:#tinyMCE-0_ifr", timeout=4)
         if not frame:
             return result

@@ -290,6 +290,17 @@ class BrowserDomTests(unittest.TestCase):
         self.assertEqual(preview_result({}, {'description': detail,
             'package_dimensions': {'status': 'filled'}}, {}), 'preview_partial')
 
+    def test_legacy_hidden_editor_is_not_written(self):
+        self.load('''<div id="guid-description">
+          <iframe class="new-editor-preview-content" srcdoc="<p>Visible preview</p>"></iframe>
+          <div style="display:none"><iframe id="tinyMCE-0_ifr" srcdoc="<body contenteditable='true'></body>"></iframe></div>
+          </div>''')
+        result = fill_legacy_description_editor(self.page, {'title': 'Description text',
+            'description': {'images': ['data:image/png;base64,invalid']}})
+        self.assertEqual(self.page.run_js('return document.querySelector("#tinyMCE-0_ifr").contentDocument.body.innerHTML'), '')
+        self.assertFalse(result['saved'])
+        self.assertEqual(result['reason'], 'legacy_editor_not_visible')
+
     def test_file_image_readback_reacquires_recreated_row(self):
         self.load('''<div id="guid-skuTable"><table data-codex-sku-table="1"><tbody>
           <tr data-sku-id="A"><td><input type="file" onchange="
@@ -525,6 +536,26 @@ class BrowserDomTests(unittest.TestCase):
             self.assertEqual(result['inserted'], 1, result)
             self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
             self.assertEqual(self.page.run_js('return document.querySelector(".new-editor-preview-content").contentDocument.images.length'), 1)
+
+    def test_detail_recovers_property_application_overlay_before_filling(self):
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture({'propertyOverlay': True})
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(self.image_data('red')[0])
+            recovery = dismiss_unexpected_popups(self.page)
+            result = fill_description_components(self.page, {'title': 'Description text'}, [path])
+            self.assertTrue(result['saved'], result)
+            self.assertIn('property_application_cancelled:1', recovery)
+            self.assertEqual(result['images']['inserted'], 1)
+            self.assertEqual(self.page.run_js('return [window.uploads,window.commits,!!window.propertySubmitted]'),
+                             [1, 1, False])
+
+    def test_detail_blocks_property_overlay_without_enabled_cancel(self):
+        self.detail_fixture({'propertyOverlay': True, 'disablePropertyCancel': True})
+        with self.assertRaisesRegex(PopupRecoveryError, 'property_application_dialog_still_open'):
+            dismiss_unexpected_popups(self.page)
+        self.assertEqual(self.page.run_js('return [window.uploads,window.commits,!!window.propertySubmitted]'),
+                         [0, 0, False])
 
     def test_detail_text_success_with_missing_images_is_not_complete(self):
         data, _ = self.image_data('red')

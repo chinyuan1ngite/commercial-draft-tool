@@ -17,6 +17,22 @@ window.setup = options => {
   window.textCommits = 0;
   const dialog = document.querySelector('.ibank-picker-dialog');
   const picker = document.querySelector('.picker-frame');
+  if (options.propertyOverlay) {
+    const root = document.createElement('div'); root.id = 'property-dialog';
+    root.className = 'ant-modal-root';
+    root.innerHTML = `<div class="ant-modal-mask" style="position:fixed;inset:0;background:#0008;z-index:1000"></div>
+      <div class="ant-modal-wrap" style="position:fixed;inset:0;z-index:1000">
+      <div role="dialog" aria-modal="true" class="ant-modal ant-modal-confirm ant-modal-confirm-confirm cat-prop-apply-modal"
+           style="background:white;margin:60px auto;width:380px">
+      <div>属性值申请</div><div>产品属性 是否多功能</div>
+      <textarea placeholder="请输入您想申请的属性值"></textarea>
+      <button class="ant-btn ant-btn-default cancel">取 消</button>
+      <button class="ant-btn ant-btn-primary apply">提交申请</button></div></div>`;
+    document.body.append(root);
+    root.querySelector('.cancel').disabled = !!options.disablePropertyCancel;
+    root.querySelector('.cancel').onclick = () => root.remove();
+    root.querySelector('.apply').onclick = () => window.propertySubmitted = true;
+  }
   dialog.querySelector('.close').onclick = () => { dialog.hidden = true; };
   document.querySelector('#pictures').onclick = () => {
     dialog.hidden = false;
