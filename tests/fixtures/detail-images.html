@@ -36,6 +36,12 @@ window.setup = options => {
   dialog.querySelector('.close').onclick = () => { dialog.hidden = true; };
   document.querySelector('#pictures').onclick = () => {
     dialog.hidden = false;
+    if (options.remotePickerUrl) {
+      picker.removeAttribute('srcdoc');
+      picker.src = 'about:blank';
+      setTimeout(() => { picker.src = options.remotePickerUrl; }, options.remotePickerDelay || 100);
+      return;
+    }
     picker.srcdoc = `<!doctype html><meta charset="utf-8">
       <ul><li class="tab-upload">Upload</li><li class="tab-album">Album</li></ul>
       <input class="album-search"><input class="album-btn" type="button" value="Search">
@@ -102,6 +108,13 @@ window.setup = options => {
       };
     };
   };
+  window.addEventListener('message', event => {
+    if (event.data?.kind !== 'detail-picker-insert' || !event.data.src) return;
+    const image = document.createElement('img'); image.src = event.data.src;
+    document.querySelector('.new-editor-preview-content').contentDocument.body.append(image);
+    window.commits++;
+    dialog.hidden = true;
+  });
   document.querySelector('#text').onclick = () => {
     const modal = document.querySelector('.ant-modal'); modal.hidden = false;
     modal.replaceChildren();

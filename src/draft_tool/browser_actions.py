@@ -463,16 +463,24 @@ def _close_sku_picture_picker(page: ChromiumPage) -> None:
     raise RuntimeError("picker_cleanup_not_confirmed")
 
 
-def _current_picker_frame(page: ChromiumPage, timeout: float = 5) -> Any:
-    """Return the current picker document after its iframe has been rebuilt."""
+def _current_picker_frame(page: ChromiumPage, timeout: float = 10) -> Any:
+    """Wait through about:blank and return the current usable picker document."""
     deadline = time.monotonic() + timeout
     last_lost: Exception | None = None
     while time.monotonic() < deadline:
         try:
             frame = page.get_frame("css:iframe.picker-frame", timeout=1)
-            if frame and frame.wait.doc_loaded(timeout=1) and frame.run_js(
-                "return Boolean(document.documentElement);"
-            ):
+            ready = frame and frame.wait.doc_loaded(timeout=1) and frame.run_js(
+                """
+                return Boolean(
+                  document.querySelector('li.tab-album') &&
+                  document.querySelector('li.tab-upload') &&
+                  document.querySelector('.insert-pool') &&
+                  document.querySelector('.ib-footer.action')
+                );
+                """
+            )
+            if ready:
                 return frame
         except Exception as exc:
             if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'}:
@@ -1899,21 +1907,11 @@ def insert_detail_images(
                 raise RuntimeError('detail_picker_control_unavailable')
             owned = True
             trigger.click()
-            # Reopening the picker can replace its document while DrissionPage
-            # still holds the previous frame. Recover only before media writes.
-            for refresh in range(3):
-                try:
-                    frame = page.get_frame("css:iframe.picker-frame", timeout=5)
-                    if not frame:
-                        raise RuntimeError('detail_picker_frame_unavailable')
-                    if not frame.wait.doc_loaded(timeout=5):
-                        raise RuntimeError('detail_picker_document_unavailable')
-                    batch_result["pool_cleared"] = _picker_clear_pool(frame)
-                    break
-                except Exception as exc:
-                    if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'} or refresh == 2:
-                        raise
-                    time.sleep(.1)
+            # The platform first exposes an about:blank iframe, then turns it
+            # into a cross-origin picture-manager target. Treating the blank
+            # document as ready races that transition and loses the target.
+            frame = _current_picker_frame(page)
+            batch_result["pool_cleared"] = _picker_clear_pool(frame)
             frame = _switch_picker_tab(page, frame, 'li.tab-album')
             frame = _search_current_picker(page, frame, path.stem[:20])
             candidate = _verified_sku_candidate(frame, path.stem, digest, cache)

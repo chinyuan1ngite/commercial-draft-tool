@@ -6,9 +6,11 @@ from io import BytesIO
 import os
 from pathlib import Path
 import shutil
+import threading
 import time
 import unittest
 from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote
 
 from DrissionPage import ChromiumOptions, ChromiumPage
@@ -543,6 +545,48 @@ class BrowserDomTests(unittest.TestCase):
         self.load((Path(__file__).parent / 'fixtures/detail-images.html').read_text(encoding='utf-8'))
         self.page.run_js('window.setup(JSON.parse(arguments[0]))', json.dumps(options or {}))
 
+    @contextmanager
+    def cross_origin_picker(self, image_src):
+        picker_body = f'''<!doctype html><meta charset="utf-8">
+          <ul><li class="tab-upload">Upload</li><li class="tab-album">Album</li></ul>
+          <input class="album-search"><input class="album-btn" type="button" value="Search">
+          <a title="detail"><img src="{image_src}"></a>
+          <ul class="insert-pool"></ul><div class="ib-footer action"><button class="button submit">Insert</button></div>
+          <script>
+            document.querySelector('a[title]').onclick = event => {{
+              event.preventDefault();
+              const li = document.createElement('li'); li.append(event.currentTarget.querySelector('img').cloneNode());
+              document.querySelector('.insert-pool').replaceChildren(li);
+            }};
+            document.querySelector('.submit').onclick = () => parent.postMessage({{
+              kind: 'detail-picker-insert', src: document.querySelector('.insert-pool img')?.src
+            }}, '*');
+          </script>'''.encode()
+        parent_body = (Path(__file__).parent / 'fixtures/detail-images.html').read_bytes()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = parent_body if self.path.startswith('/parent') else picker_body
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield (f'http://localhost:{server.server_port}/parent',
+                   f'http://127.0.0.1:{server.server_port}/picker')
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_detail_upload_inserts_processed_auto_selection_without_album_record(self):
         data, _ = self.image_data('red')
         with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
@@ -553,6 +597,23 @@ class BrowserDomTests(unittest.TestCase):
             self.assertEqual(result['inserted'], 1, result)
             self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
             self.assertEqual(self.page.run_js('return document.querySelector(".new-editor-preview-content").contentDocument.images.length'), 1)
+
+    def test_detail_waits_for_about_blank_picker_to_become_cross_origin(self):
+        data, image_src = self.image_data('red')
+        with self.cross_origin_picker(image_src) as urls, tempfile.TemporaryDirectory() as folder:
+            parent_url, picker_url = urls
+            self.page.get(parent_url)
+            self.page.wait.doc_loaded(timeout=5)
+            self.page.run_js('window.setup(JSON.parse(arguments[0]))', json.dumps({
+                'remotePickerUrl': picker_url, 'remotePickerDelay': 250,
+            }))
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(data)
+            result = fill_description_components(self.page, {'title': 'Description text'}, [path])
+            self.assertTrue(result['saved'], result)
+            self.assertEqual(result['images']['inserted'], 1, result)
+            self.assertEqual(result['images']['preview_count'], 1, result)
+            self.assertTrue(self.page.get_frame('css:iframe.picker-frame')._is_diff_domain)
 
     def test_detail_reacquires_picker_replaced_when_album_tab_opens(self):
         data, _ = self.image_data('red')
