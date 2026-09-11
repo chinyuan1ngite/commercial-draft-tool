@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.20 - 2026-09-11 (Validation Build)
+
+- Inserted detail images through correlated upload receipts and the verified automatic selection, even when the album has not refreshed or titles are truncated.
+- Verified rendered detail image identities and source order while preserving existing preview content; rejected wrong or extra selections and incorrect preview images.
+- Stopped subsequent image operations and automatic description retries when an upload or insertion is uncertain.
+- Reported text commitment separately from complete description success, preventing incomplete detail images from passing preview and save gates.
+- Preserved strict original-byte verification for uploads without a correlated receipt.
+- Required explicit image confirmation at the shared save gate; legacy URL-only writes now report indeterminate images and cannot pass as complete descriptions.
+- Waited for the reopened picker document and reacquired stale frame references before uploads, fixing intermittent failure on the second detail image.
+- Validation: 166 tests passed, including 48 isolated Chrome DOM tests; six consecutive two-image insertion checks passed. Independent Standards and Spec reviews have no remaining findings. Real seller upload/save/reopen acceptance remains pending.
+- Known limitation: persistent receipt reuse across runs remains outside this repair. This is a test build, not a stable release.
+
 ## 0.4.19 - 2026-09-10 (Validation Build)
 
 - Correlated picker upload responses with validated local assets using unique multipart filenames.

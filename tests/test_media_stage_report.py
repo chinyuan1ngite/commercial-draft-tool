@@ -4,6 +4,13 @@ from draft_tool.browser_actions import record_sku_image_block, description_block
 
 
 class MediaStageReportTests(unittest.TestCase):
+    def test_unverified_legacy_counts_do_not_pass_preview_or_save_gate(self):
+        description = {'saved': True, 'images': {
+            'requested': 51, 'inserted': 51, 'fallback': True}}
+        self.assertEqual(description_block_reason(description), 'blocked_incomplete_description')
+        self.assertEqual(preview_result({}, {'description': description,
+            'package_dimensions': {'status': 'filled'}}, {}), 'preview_partial')
+
     def test_partial_detail_does_not_pass_preview_or_save_gate(self):
         description = {'saved': True, 'text_saved': True,
                        'images': {'requested': 2, 'inserted': 1, 'status': 'partial'}}

@@ -1836,10 +1836,21 @@ def insert_detail_images(
                 raise RuntimeError('detail_picker_control_unavailable')
             owned = True
             trigger.click()
-            frame = page.get_frame("css:iframe.picker-frame", timeout=5)
-            if not frame:
-                raise RuntimeError('detail_picker_frame_unavailable')
-            batch_result["pool_cleared"] = _picker_clear_pool(frame)
+            # Reopening the picker can replace its document while DrissionPage
+            # still holds the previous frame. Recover only before media writes.
+            for refresh in range(3):
+                try:
+                    frame = page.get_frame("css:iframe.picker-frame", timeout=5)
+                    if not frame:
+                        raise RuntimeError('detail_picker_frame_unavailable')
+                    if not frame.wait.doc_loaded(timeout=5):
+                        raise RuntimeError('detail_picker_document_unavailable')
+                    batch_result["pool_cleared"] = _picker_clear_pool(frame)
+                    break
+                except Exception as exc:
+                    if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'} or refresh == 2:
+                        raise
+                    time.sleep(.1)
             frame.run_js("document.querySelector('li.tab-album')?.click();")
             _picker_search_title(frame, path.stem[:20])
             candidate = _verified_sku_candidate(frame, path.stem, digest, cache)
@@ -1954,7 +1965,8 @@ def fill_legacy_description_editor(
     be populated without holding a fragile cross-frame target. Detail image
     URLs come from this product manifest, never from another local folder.
     """
-    result: dict[str, Any] = {"text_component": False, "saved": False, "preview": "", "fallback": "legacy"}
+    result: dict[str, Any] = {"text_component": False, "text_saved": False,
+        "saved": False, "retry_allowed": True, "preview": "", "fallback": "legacy"}
     try:
         frame = page.get_frame("css:#tinyMCE-0_ifr", timeout=4)
         if not frame:
@@ -1967,6 +1979,13 @@ def fill_legacy_description_editor(
         image_urls = [str(url).strip() for url in (description.get("images") or []) if str(url).strip()]
         html = "".join(f"<p>{line.strip()}</p>" for line in text.splitlines() if line.strip())
         html += "".join(f'<p><img src="{url}" /></p>' for url in image_urls[:50])
+        # The legacy editor has no media-identity readback. Writing URLs cannot
+        # confirm images, including entries beyond its existing 50-image cap.
+        result['images'] = {'requested': len(image_urls), 'inserted': 0, 'fallback': True,
+            'status': 'indeterminate' if image_urls else 'confirmed',
+            'indeterminate': bool(image_urls)}
+        result['retry_allowed'] = False
+        result['status'] = 'indeterminate' if image_urls else 'text_commit_unconfirmed'
         # Prefer TinyMCE's own API so the parent React form receives its
         # model-change event; fall back to the iframe body for older builds.
         api_set = bool(page.run_js(
@@ -1995,9 +2014,12 @@ def fill_legacy_description_editor(
             )
         time.sleep(1)
         result["text_component"] = bool(text)
-        result["saved"] = bool(text or image_urls)
         result["preview"] = str(frame.run_js("return (document.body?.innerText || '').trim();") or "").strip()
-        result["images"] = {"requested": len(image_urls), "inserted": len(image_urls), "fallback": True}
+        result['text_saved'] = bool(_compact_text(text)
+            and _compact_text(text) in _compact_text(result['preview']))
+        result['saved'] = result['text_saved'] and not image_urls
+        if result['saved']:
+            result['status'] = 'confirmed'
     except Exception as exc:
         result["error"] = type(exc).__name__
     return result
@@ -3049,7 +3071,7 @@ def description_block_reason(description: dict[str, Any]) -> str | None:
     if images.get('indeterminate'):
         return 'blocked_indeterminate_description'
     if images and (images.get('requested', 0) != images.get('inserted', 0)
-                   or images.get('status', 'confirmed') != 'confirmed'):
+                   or images.get('status') != 'confirmed'):
         return 'blocked_incomplete_description'
     if not description.get('saved'):
         return 'blocked_empty_description'
@@ -3706,7 +3728,8 @@ def main(argv: list[str] | None = None) -> int:
                     report["fields"]["description_fallback"] = fill_legacy_description_editor(
                         page, product
                     )
-                    if report["fields"]["description_fallback"].get("saved"):
+                    if (report["fields"]["description_fallback"].get("saved")
+                            or not report["fields"]["description_fallback"].get('retry_allowed', True)):
                         report["fields"]["description"] = report["fields"]["description_fallback"]
         except Exception as exc:
             report["fields"]["description"] = {

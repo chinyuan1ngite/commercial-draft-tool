@@ -277,6 +277,19 @@ class BrowserDomTests(unittest.TestCase):
         self.assertEqual(detail['preview'], 'Fixture detail', detail)
         self.assertEqual(self.page.get_frame('css:#tinyMCE-0_ifr').ele('tag:body').text, 'Fixture detail')
 
+    def test_legacy_detail_unverified_images_remain_incomplete(self):
+        self.load('''<iframe id="tinyMCE-0_ifr" srcdoc="<body contenteditable='true'></body>"></iframe>''')
+        detail = fill_legacy_description_editor(self.page, {'description': {
+            'text': 'Fixture detail', 'images': ['data:image/png;base64,invalid'] * 51}})
+        self.assertTrue(detail.get('text_saved'), detail)
+        self.assertFalse(detail['saved'], detail)
+        self.assertFalse(detail['retry_allowed'], detail)
+        self.assertEqual(detail['images']['requested'], 51)
+        self.assertEqual(detail['images']['inserted'], 0)
+        self.assertEqual(description_block_reason(detail), 'blocked_indeterminate_description')
+        self.assertEqual(preview_result({}, {'description': detail,
+            'package_dimensions': {'status': 'filled'}}, {}), 'preview_partial')
+
     def test_file_image_readback_reacquires_recreated_row(self):
         self.load('''<div id="guid-skuTable"><table data-codex-sku-table="1"><tbody>
           <tr data-sku-id="A"><td><input type="file" onchange="

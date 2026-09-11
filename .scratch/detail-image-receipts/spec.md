@@ -1,7 +1,7 @@
 # Detail Image Receipt Repair
 
 Date: 2026-09-11
-Status: claimed
+Status: resolved
 Review baseline: c934662e504645eda6e0f9c9aecd48fccd406f0f
 
 User-authorized scope: repair the text-only component description after detail
