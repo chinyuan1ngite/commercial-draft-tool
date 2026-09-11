@@ -1,7 +1,7 @@
 # Detail picker frame refresh
 
 Date: 2026-09-11
-Status: claimed
+Status: resolved
 Baseline: 3b073b9
 
 Repair the user-reported detail state in which the text component is visible but

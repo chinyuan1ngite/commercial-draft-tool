@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.23 - 2026-09-11 (Validation Build)
+
+- Validation: 174 tests passed, including 55 isolated Chrome tests.
+- Reacquired the current detail picture-picker iframe after album-tab and album-search actions replace its document.
+- Prevented the observed text-only result where four prepared detail images failed before the first upload with ContextLostError.
+- Kept retries before media side effects; uncertain uploads and inserts remain blocked from automatic retry and draft saving.
+- Added deterministic Chrome regressions for iframe replacement during album navigation and search, requiring verified image readback in the visible detail preview.
+
 ## 0.4.22 - 2026-09-11 (Validation Build)
 
 - Validation: 172 tests passed, including 53 isolated Chrome DOM tests; independent Standards and Spec reviews have no findings.
