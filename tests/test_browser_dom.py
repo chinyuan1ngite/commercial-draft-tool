@@ -554,6 +554,32 @@ class BrowserDomTests(unittest.TestCase):
             self.assertEqual(self.page.run_js('return [window.uploads,window.commits]'), [1, 1])
             self.assertEqual(self.page.run_js('return document.querySelector(".new-editor-preview-content").contentDocument.images.length'), 1)
 
+    def test_detail_reacquires_picker_replaced_when_album_tab_opens(self):
+        data, _ = self.image_data('red')
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture({'replacePickerOnAlbum': True})
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(data)
+            result = fill_description_components(self.page, {'title': 'Description text'}, [path])
+            self.assertTrue(result['saved'], result)
+            self.assertEqual(result['images']['inserted'], 1, result)
+            self.assertEqual(result['images']['preview_count'], 1, result)
+            self.assertEqual(self.page.run_js('return [window.pickerReplacedOnAlbum,window.uploads,window.commits,window.textCommits]'),
+                             [True, 1, 1, 1])
+
+    def test_detail_reacquires_picker_replaced_by_album_search(self):
+        data, _ = self.image_data('red')
+        with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
+            self.detail_fixture({'replacePickerOnSearch': True})
+            path = Path(folder) / 'detail.png'
+            path.write_bytes(data)
+            result = fill_description_components(self.page, {'title': 'Description text'}, [path])
+            self.assertTrue(result['saved'], result)
+            self.assertEqual(result['images']['inserted'], 1, result)
+            self.assertEqual(result['images']['preview_count'], 1, result)
+            self.assertEqual(self.page.run_js('return [window.pickerReplacedOnSearch,window.uploads,window.commits,window.textCommits]'),
+                             [True, 1, 1, 1])
+
     def test_detail_recovers_property_application_overlay_before_filling(self):
         with self.processed_upload_fixture(), tempfile.TemporaryDirectory() as folder:
             self.detail_fixture({'propertyOverlay': True})

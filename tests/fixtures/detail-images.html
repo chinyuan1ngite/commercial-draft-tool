@@ -38,12 +38,25 @@ window.setup = options => {
     dialog.hidden = false;
     picker.srcdoc = `<!doctype html><meta charset="utf-8">
       <ul><li class="tab-upload">Upload</li><li class="tab-album">Album</li></ul>
+      <input class="album-search"><input class="album-btn" type="button" value="Search">
       <input type="file"><p id="progress"></p><div id="album"></div>
       <ul class="insert-pool"></ul><div class="ib-footer action">
       <button class="button submit">Insert</button></div>`;
     picker.onload = () => {
       const doc = picker.contentDocument;
-      doc.querySelector('input').onchange = async event => {
+      doc.querySelector('.tab-album').onclick = () => {
+        if (options.replacePickerOnAlbum && !window.pickerReplacedOnAlbum) {
+          window.pickerReplacedOnAlbum = true;
+          picker.srcdoc = picker.srcdoc;
+        }
+      };
+      doc.querySelector('.album-btn').onclick = () => {
+        if (options.replacePickerOnSearch && !window.pickerReplacedOnSearch) {
+          window.pickerReplacedOnSearch = true;
+          picker.srcdoc = picker.srcdoc;
+        }
+      };
+      doc.querySelector('input[type="file"]').onchange = async event => {
         const file = event.target.files[0];
         window.uploads++;
         const addPool = src => {

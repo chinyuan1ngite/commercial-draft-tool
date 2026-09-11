@@ -463,6 +463,69 @@ def _close_sku_picture_picker(page: ChromiumPage) -> None:
     raise RuntimeError("picker_cleanup_not_confirmed")
 
 
+def _current_picker_frame(page: ChromiumPage, timeout: float = 5) -> Any:
+    """Return the current picker document after its iframe has been rebuilt."""
+    deadline = time.monotonic() + timeout
+    last_lost: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            frame = page.get_frame("css:iframe.picker-frame", timeout=1)
+            if frame and frame.wait.doc_loaded(timeout=1) and frame.run_js(
+                "return Boolean(document.documentElement);"
+            ):
+                return frame
+        except Exception as exc:
+            if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'}:
+                raise
+            last_lost = exc
+        time.sleep(.1)
+    if last_lost:
+        raise last_lost
+    raise RuntimeError('detail_picker_document_unavailable')
+
+
+def _switch_picker_tab(page: ChromiumPage, frame: Any, selector: str) -> Any:
+    """Click a picker tab and reacquire the iframe document it may replace."""
+    clicked = False
+    try:
+        clicked = bool(frame.run_js(
+            """
+            const node = document.querySelector(arguments[0]);
+            if (!node) return false;
+            node.click();
+            return true;
+            """,
+            selector,
+        ))
+    except Exception as exc:
+        if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'}:
+            raise
+        # A synchronous tab navigation can destroy the execution context before
+        # run_js returns even though the click was already delivered.
+        clicked = True
+    if not clicked:
+        return frame
+    time.sleep(.2)
+    return _current_picker_frame(page)
+
+
+def _search_current_picker(page: ChromiumPage, frame: Any, title: str) -> Any:
+    """Search the album and return the iframe document that renders the result."""
+    searched = False
+    try:
+        searched = _picker_search_title(frame, title)
+    except Exception as exc:
+        if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'}:
+            raise
+        # The search request may navigate the iframe before its click handler
+        # can return to DrissionPage. Reacquiring is safe before any upload.
+        searched = True
+    if not searched:
+        return frame
+    time.sleep(.2)
+    return _current_picker_frame(page)
+
+
 def _sku_picker_candidates(frame: Any, title: str, receipt: dict[str, Any] | None = None) -> list[dict[str, str]]:
     return list(frame.run_js("""
         const norm = value => String(value || '').trim().replace(/[.](?:jpe?g|png|webp)$/i, '');
@@ -1851,13 +1914,13 @@ def insert_detail_images(
                     if type(exc).__name__ not in {'ElementLostError', 'ContextLostError'} or refresh == 2:
                         raise
                     time.sleep(.1)
-            frame.run_js("document.querySelector('li.tab-album')?.click();")
-            _picker_search_title(frame, path.stem[:20])
+            frame = _switch_picker_tab(page, frame, 'li.tab-album')
+            frame = _search_current_picker(page, frame, path.stem[:20])
             candidate = _verified_sku_candidate(frame, path.stem, digest, cache)
             receipt = None
             candidate_selected = False
             if candidate is None:
-                frame.run_js("document.querySelector('li.tab-upload')?.click();")
+                frame = _switch_picker_tab(page, frame, 'li.tab-upload')
                 file_input = frame.ele('css:input[type="file"]', timeout=3)
                 if not file_input:
                     raise RuntimeError('detail_upload_input_unavailable')
@@ -1880,9 +1943,9 @@ def insert_detail_images(
                         raise RuntimeError('detail_selection_pool_identity_mismatch')
                     break
                 if not pool and not receipt and not candidate_selected:
-                    frame.run_js("document.querySelector('li.tab-album')?.click();")
+                    frame = _switch_picker_tab(page, frame, 'li.tab-album')
                     title = Path(batch_result.get('upload_filename') or path.name).stem
-                    _picker_search_title(frame, title[:20])
+                    frame = _search_current_picker(page, frame, title[:20])
                     candidate = _verified_sku_candidate(frame, title, digest, cache, deadline=deadline)
                     if candidate:
                         _select_detail_candidate(frame, candidate)
