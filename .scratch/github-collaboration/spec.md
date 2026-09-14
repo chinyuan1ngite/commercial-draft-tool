@@ -31,4 +31,14 @@ Prepare this repository for private GitHub collaboration with reviewable issue a
 
 ## Verification
 
-To be recorded after implementation.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test.ps1`: 182 tests discovered, 126 executed and passed, 56 browser tests skipped by design.
+- `python scripts/check_version.py`: passed for `0.4.24`.
+- `python -m unittest tests.test_documentation tests.test_project_automation -v`: 7 passed.
+- `scripts/verify_release.py` against the existing 0.4.24 ZIP: CRC, required files, safe paths, version, executable SHA256, `--smoke-test`, and `--cli --help` passed.
+- Existing ZIP SHA256 remains `BA2242BDE8F27F1C319C1B74284071985F1476F66110363EEB584BE10811705A`.
+- History audit: only `main` is reachable; 54 commits scanned with no high-signal credential hits, browser/runtime data paths, local absolute paths, or oversized blobs reported.
+- Local build was intentionally not performed: the existing same-version output is protected, and this machine's Tcl/Tk installation cannot initialize. CI's clean Windows runner is the build environment.
+
+## External follow-up
+
+The local GitHub preparation is complete in commit `7ef3a03`. Creating the private remote and pushing `main` still requires an authenticated GitHub account and final repository owner/name. No remote, collaborator invitation, branch rule, or public release was created in this environment.
