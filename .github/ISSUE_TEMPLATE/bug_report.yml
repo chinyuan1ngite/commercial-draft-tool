@@ -1,0 +1,81 @@
+name: Bug report
+description: Report a reproducible collection, validation, preview, or draft-save failure
+title: "[Bug]: "
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Use synthetic or sanitized evidence. Never upload browser profiles, cookies,
+        tokens, full runtime directories, unredacted seller pages, or collected customer data.
+  - type: input
+    id: version
+    attributes:
+      label: Tool version or commit
+      placeholder: 0.4.24 or commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows, Python, Chrome, and DrissionPage versions
+      placeholder: Windows 11; Python 3.12.2; Chrome 140; DrissionPage 4.1.1.4
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Failure stage
+      options:
+        - 1688 collection
+        - Local validation
+        - Target category capture
+        - Seller-page preview
+        - Draft save
+        - Draft reopen verification
+        - Installation or packaging
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: platforms
+    attributes:
+      label: Platform, category, and page mode
+      description: Name the source and target platform, category, and relevant old/new page mode.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal sanitized reproduction
+      description: Include ordered steps and the smallest synthetic input that reproduces the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized exception types and relevant report result/field values.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Link a synthetic fixture or paste only the necessary redacted report fields.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Data safety
+      options:
+        - label: I removed credentials, cookies, account identifiers, local user paths, store text, and unnecessary product data.
+          required: true
+        - label: I did not attach a browser profile or an entire runtime/data directory.
+          required: true

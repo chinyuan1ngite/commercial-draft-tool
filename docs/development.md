@@ -69,7 +69,7 @@ try {
 }
 ```
 
-0.4.24 基线共 175 项，56 项浏览器测试默认跳过；跳过不等于通过。
+也可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test.ps1`；加 `-Browser` 执行隔离 Chrome 回归。脚本会检查依赖、版本一致性、`src/tests/examples/scripts` 编译并传播任何失败。`Bypass` 只作用于这个子进程，不修改系统策略。跳过浏览器测试不等于通过。
 
 页面操作变更需安装 Chrome 并执行：
 
@@ -94,8 +94,8 @@ try {
 
 `--validate-only` 不访问页面；预览可能上传媒体；无预览/校验标志时尝试保存。详情 `text_saved` 不代表图片或整个草稿成功。结果未知时先检查平台状态，不能仅增加重试次数。
 
-构建命令：`powershell -NoProfile -File .\scripts\build.ps1`。需要安装 PyInstaller 及可初始化的 Tcl/Tk；生成 `dist/Commercial1688DraftTool-<VERSION>-win64.zip`。
+构建前安装锁定的构建依赖：`.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt`，再运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1`。需要可初始化的 Tcl/Tk；生成 ZIP 和对应 `.sha256`。
 
-当前构建会覆盖同版本本地 ZIP 并复制整个 `docs`，不能作为已发布产物的替换流程。本批不重打 0.4.24 包。包验证脚本目前仍有逻辑在忽略目录 `.local`，新克隆不可依赖它。
+构建默认拒绝已有同版本目录、ZIP 或哈希文件，避免覆盖已经交付的产物。本地有意重建可加 `-OverwriteLocalBuild`，正式发布仍应先递增 `VERSION`。包内只包含用户文档清单，不包含内部交接和代理说明。
 
-已有 `scripts/test.ps1` / `install.ps1` 未完整传播每一步原生命令错误，本指南使用显式退出码检查。脚本统一、依赖固定和文档打包清单属于 [下一批](../ROADMAP.md)。
+`scripts/verify_release.py` 会验证 ZIP 路径、必需文件、版本、EXE 哈希、启动器烟雾检查和 CLI 帮助。它会执行包内 EXE，只能用于可信本地或 CI 构建。单元测试专用的 `--skip-executable-smoke` 仅检查结构和哈希，不能作为发布通过证据。完整流程见 [维护指南](maintenance.md)。

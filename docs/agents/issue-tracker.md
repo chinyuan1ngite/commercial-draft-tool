@@ -1,37 +1,21 @@
-# Issue Tracker: Local Markdown
+# Issue Tracker
 
-Issues and specs live in `.scratch/`, relative to the repository root. Tracker operations are local file operations; they do not require a hosted issue tracker or a Git remote.
+私有 GitHub 远端建立后，GitHub Issues 是任务状态、负责人、标签和讨论的唯一入口。`.scratch/` 保留可随代码评审的规格、验收证据和历史记录，但不与 Issue 重复维护状态。
 
-## Conventions
+## GitHub 工作流
 
-- Use one directory per feature: `.scratch/<feature-slug>/`.
-- Store its spec at `.scratch/<feature-slug>/spec.md`.
-- Store each implementation ticket separately at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbering from `01` within that feature. Choose an unused number and preserve existing files.
-- Link each ticket to its spec and record its acceptance criteria, dependencies, and verification evidence in the ticket.
-- Put a `Status:` line near the top. Triage values come from [triage-labels.md](triage-labels.md); execution additionally uses `claimed` and `resolved`.
-- Record dependencies as `Blocked by: 01, 02`, referring to tickets in the same feature. Omit the line when there are none; use full repository-relative paths for cross-feature dependencies.
-- Append discussion and progress under `## Comments`, preserving earlier entries.
-- Keep specs and tickets eligible for Git tracking so their history can be reviewed alongside the implementation. Create directories when the first spec or ticket is needed.
+- 故障使用 Bug report 表单，平台能力使用 Platform feature 表单；禁用无结构空白 Issue。
+- 新 Issue 默认 `needs-triage`。维护者按 [标签映射](triage-labels.md) 改为 `needs-info`、`ready-for-agent`、`ready-for-human` 或 `wontfix`。
+- 用 Assignee 表示当前负责人；用关联 Issue/PR 和 GitHub 的 blocked-by 关系表达依赖。
+- PR 使用 `Closes #<number>` 关联实现任务。合并后由 GitHub 关闭 Issue，不在本地另建完成状态。
+- 页面故障必须区分隔离浏览器回归与真实页面验收；没有授权店铺证据时保留对应限制。
 
-## Publish and Fetch
+## 仓库内规格
 
-When a skill says "publish to the issue tracker", create or update the appropriate spec or individual ticket file using the conventions above. An update retains the existing ticket path and history.
+需要跨文件设计、兼容迁移或长期证据时，在 `.scratch/<feature-slug>/spec.md` 记录规格，并从 Issue 链接。稳定架构决策进入 `docs/adr/`；公开接口和格式进入正式文档。规格应写明基线、范围、验收条件和验证，不包含账号或现场数据。
 
-When a skill says "fetch the relevant ticket", read the referenced file, its linked spec, and relevant dependency tickets. A bare number is scoped to its feature; if it matches multiple features, resolve the feature before using it. Commit references should use the repository-relative ticket path.
+现有 `.scratch/*/issues/` 是迁移前历史，可以继续引用但不创建新的本地执行票。没有 GitHub 远端的离线副本可临时在规格中记录进度，联网后应同步回已有 Issue，避免创建两个任务身份。
 
-## Execution and Completion
+## 数据边界
 
-An implementation ticket is eligible for automatic work when its status is `ready-for-agent` and every dependency is `resolved`. Set `Status: claimed` before starting. On resumption, inspect the recorded progress and current code before continuing a claimed ticket.
-
-Set `Status: resolved` after the acceptance criteria and required verification are satisfied. Record the result and verification evidence under `## Answer`. If blocked or interrupted, record the remaining work under `## Comments`; retain the unresolved state. A `wontfix` dependency is not equivalent to a completed prerequisite.
-
-## Wayfinding Operations
-
-When `/wayfinder` is used, its map is `.scratch/<feature-slug>/map.md`, with `Notes`, `Decisions-so-far`, and `Fog` sections. Its child tickets use the same `issues/` directory and numbering convention.
-
-- A `Type:` line records `research`, `prototype`, `grilling`, or `task`.
-- `Status: open` identifies an unclaimed wayfinding question; claim and resolve it using the execution states above.
-- The frontier contains `open` tickets whose dependencies are all `resolved`, ordered by ticket number.
-- On resolution, append the answer under `## Answer`, then add a concise finding and ticket link to the map's `Decisions-so-far` section.
-
-`open` is specific to wayfinding questions. Implementation-ticket readiness uses the triage mapping.
+Issue、PR 和规格只使用合成或脱敏证据。不得上传 Cookie、令牌、浏览器 Profile、整个运行目录、未脱敏卖家页面、本机用户路径或不必要的商品数据。完整报告留在授权机器；提交最小错误类型、阶段和必要字段。

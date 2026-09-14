@@ -11,7 +11,7 @@
 | 使用 Windows 工具 | [操作说明](docs/操作说明.md)、[环境配置](docs/环境配置.md) |
 | 不登录账号，了解输入和校验结果 | [离线样例](examples/README.md) |
 | 安装源码、调试、运行测试 | [开发指南](docs/development.md) |
-| 接手项目、查看待办和历史证据 | [交接清单](docs/handover.md)、[路线图](ROADMAP.md) |
+| 接手项目、查看待办和历史证据 | [交接清单](docs/handover.md)、[维护指南](docs/maintenance.md)、[路线图](ROADMAP.md) |
 | 理解代码和商品格式 | [当前架构](docs/architecture.md)、[数据说明](docs/data-model.md) |
 | 报告问题或提交修改 | [贡献指南](CONTRIBUTING.md) |
 
@@ -25,7 +25,7 @@
 
 ## Windows 包
 
-使用维护者提供的版本 ZIP，解压后双击 `Commercial1688DraftTool.exe`。源码克隆不包含 `dist` 和 EXE；GitHub 下载地址将在私有仓库建立后补充。
+使用维护者提供的版本 ZIP，解压后双击 `Commercial1688DraftTool.exe`。源码克隆不包含 `dist` 和 EXE；经手动发布工作流验证的 ZIP 由维护者在私有仓库交付。
 
 程序不依赖 Python 或 Codex，但需要 Chrome。默认数据目录为 `%LOCALAPPDATA%\Commercial1688DraftTool`，包含配置、商品、浏览器 Profile、草稿台账及日志。
 
@@ -56,4 +56,4 @@ CLI 的 `--validate-only` 只校验本地数据；`--preview-only` 会操作卖�
 
 ## 协作状态
 
-按“先私有协作、整理后公开”推进。任务当前仍使用 `.scratch` Markdown；GitHub 协作、CI、发布自动化和许可决策列在路线图中。参与开发不需要 Codex 或个人技能包。
+按“先私有协作、整理后公开”推进。GitHub Issues/PR 模板、Windows CI、手动浏览器回归和发布包验证已纳入仓库；`.scratch` 保留规格与历史证据。公开许可仍待所有者决定。参与开发不需要 Codex 或个人技能包。

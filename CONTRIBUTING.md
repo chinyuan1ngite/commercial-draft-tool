@@ -1,10 +1,10 @@
 # 贡献指南
 
-当前为私有协作准备阶段，尚未迁移任务系统。先阅读 [README](README.md)、[开发指南](docs/development.md) 和 [交接清单](docs/handover.md)。参与者无需安装 Codex 或个人技能包。
+当前采用私有 GitHub 协作。先阅读 [README](README.md)、[开发指南](docs/development.md)、[维护指南](docs/maintenance.md) 和 [交接清单](docs/handover.md)。参与者无需安装 Codex 或个人技能包。
 
 ## 提出问题
 
-任务使用 `.scratch/<feature>/` 下的 Markdown，格式见 [任务规则](docs/agents/issue-tracker.md)。GitHub Issues 启用后将统一迁移入口。
+新故障和功能请求使用仓库的 GitHub Issue 表单。Issue 是状态、负责人和讨论的入口；较长规格、ADR、验证记录和合成样例仍放入仓库并从 Issue 链接，规则见 [任务规则](docs/agents/issue-tracker.md)。
 
 故障报告提供：工具版本、Windows/Python/Chrome/DrissionPage 版本、采集还是草稿阶段、类目和页面模式、预期与实际结果、最小复现，以及脱敏错误类型和关键报告字段。
 
@@ -14,11 +14,11 @@
 
 ## 修改流程
 
-1. 创建或关联本地任务，说明验收标准并确认依赖已完成。
+1. 创建或关联 GitHub Issue，说明验收标准并确认依赖已完成。
 2. 从当前基线创建短期分支，如 `docs/handover` 或 `fix/detail-picker`；一次处理一个明确问题。
 3. 小步修改；行为缺陷先复现原失败，再用同一场景验证。页面问题保留实际机制，例如跨域 iframe。
 4. 按开发指南执行相关检查，记录通过数、跳过数和真实页面验证范围。
-5. 提交说明写清问题、行为变化、验证和限制。GitHub 建立后通过 PR 交给维护者评审合并。
+5. 提交 PR，写清问题、行为变化、验证和限制，经 CI 与维护者评审后合并。
 
 文档修改检查命令、相对链接和样例；纯文档修改不要求重跑全部浏览器测试。商品、SKU、媒体语义变更先读 [CONTEXT](CONTEXT.md) 和 [架构中的 ADR 索引](docs/architecture.md#既有设计约束)。
 
@@ -33,6 +33,6 @@
 
 ## 发布和权限
 
-发布维护者名单待项目所有者在私有仓库建立时确定。贡献者无需店铺登录态即可参与文档、解析、模型和隔离浏览器回归。
+发布权限由仓库所有者控制。贡献者无需店铺登录态即可参与文档、解析、模型和隔离浏览器回归；真实店铺验收由授权人员执行，只提交脱敏结论。
 
-公开许可证尚未确定；本指南不代替使用、分发和公开范围的授权决定。CI、CODEOWNERS、GitHub 模板及发布验证统一化属于第二批，见 [路线图](ROADMAP.md)。
+公开许可证尚未确定；本指南不代替使用、分发和公开范围的授权决定。维护者账号确定前不设置虚构的 CODEOWNERS，公开条件见 [路线图](ROADMAP.md)。

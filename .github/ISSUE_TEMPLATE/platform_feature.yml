@@ -1,0 +1,63 @@
+name: Platform feature
+description: Propose a source collection or target draft workflow
+title: "[Platform]: "
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Describe an observable workflow and its evidence. Do not include credentials or real account data.
+  - type: input
+    id: source
+    attributes:
+      label: Source platform
+      placeholder: 1688, Douyin, Pinduoduo, or none
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target platform
+      placeholder: Seller platform or local export
+    validations:
+      required: true
+  - type: textarea
+    id: access
+    attributes:
+      label: Supported access method and evidence
+      description: Document an official API, authorized browser flow, export, or synthetic fixture.
+    validations:
+      required: true
+  - type: textarea
+    id: category
+    attributes:
+      label: Categories and page modes
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Input and output contract
+      description: List required identifiers, fields, media, SKU behavior, and resulting draft or export.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: State observable pass/fail outcomes, including save and reopen verification when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: unsupported
+    attributes:
+      label: Unsupported and uncertain behavior
+      description: Explain how the tool must stop or report when mapping or platform state is uncertain.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Publishing boundary
+      options:
+        - label: This proposal preserves manual review and does not enable automatic formal publishing.
+          required: true

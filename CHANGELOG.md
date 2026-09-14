@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added structured GitHub bug/platform Issue forms and a PR checklist for private collaboration.
+- Added Windows CI plus manual isolated-browser and release-package workflows.
+- Added tracked version and ZIP validation tools, fixed native failure propagation, pinned the tested PyInstaller version, limited packaged documentation, and refused accidental same-version build replacement.
+- Added maintenance, release, rollback, privacy, and task-tracker guidance. Product collection and seller-page behavior are unchanged.
+
+## Unreleased
+
 - Reorganized the README around user, developer and maintainer entry points.
 - Added architecture, data, development, compatibility, handover, contribution and roadmap documentation for private collaboration.
 - Added deterministic offline product and media fixtures with one passing and one focused failing validation example.
