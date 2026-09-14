@@ -13,3 +13,9 @@ This repo uses the five default triage labels. Before assigning or changing a tr
 ### Domain docs
 
 This is a single-context repo. Before exploring or changing domain behavior, read [the domain documentation rules](docs/agents/domain.md).
+
+### Architecture and handover
+
+Before changing product/SKU/report persistence or a cross-module workflow, read [the current architecture](docs/architecture.md) and [data contracts](docs/data-model.md).
+
+Before preparing a release, adding a platform, or resuming maintenance from an unfamiliar state, read [the handover checklist](docs/handover.md) and [compatibility status](docs/compatibility.md).

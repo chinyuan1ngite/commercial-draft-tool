@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Reorganized the README around user, developer and maintainer entry points.
+- Added architecture, data, development, compatibility, handover, contribution and roadmap documentation for private collaboration.
+- Added deterministic offline product and media fixtures with one passing and one focused failing validation example.
+- Documented the current 1688-only implementation separately from the proposed source/target platform model.
+
 ## 0.4.24 - 2026-09-11 (Validation Build)
 
 - Validation: 175 tests passed, including 56 isolated Chrome tests.

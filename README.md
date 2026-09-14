@@ -1,83 +1,59 @@
 # 1688 自动草稿工具
 
-交付边界固定为：采集商品、校验数据、自动保存草稿、人工审核并手动上架。程序不会点击正式发布按钮。
+采集 1688 商品，校验数据与素材，填写卖家页面并保存草稿。正式发布由人工审核后操作。
 
-本目录是独立工程，不读取原项目的 `data/` 或浏览器登录目录。生产运行数据、登录会话、配置和报告均被 `.gitignore` 排除。
+当前版本 **0.4.24，测试构建**。详情选图器修复已通过隔离 Chrome 回归，真实店铺验收仍待补齐。支持范围以 [兼容性与已知问题](docs/compatibility.md) 为准，版本变化见 [CHANGELOG](CHANGELOG.md)。
 
-## 推荐：直接运行 Windows 版
+## 选择你的入口
 
-打开 `dist` 目录中的 `Commercial1688DraftTool.exe`。首次运行会在 `%LOCALAPPDATA%\Commercial1688DraftTool` 创建配置、商品、浏览器 Profile、草稿报告和日志目录，无需 Python，也不依赖 Codex。
+| 你要做什么 | 从这里开始 |
+| --- | --- |
+| 使用 Windows 工具 | [操作说明](docs/操作说明.md)、[环境配置](docs/环境配置.md) |
+| 不登录账号，了解输入和校验结果 | [离线样例](examples/README.md) |
+| 安装源码、调试、运行测试 | [开发指南](docs/development.md) |
+| 接手项目、查看待办和历史证据 | [交接清单](docs/handover.md)、[路线图](ROADMAP.md) |
+| 理解代码和商品格式 | [当前架构](docs/architecture.md)、[数据说明](docs/data-model.md) |
+| 报告问题或提交修改 | [贡献指南](CONTRIBUTING.md) |
 
-完整说明：
+## 当前能力
 
-- [操作说明](docs/操作说明.md)
-- [环境配置](docs/环境配置.md)
+- 1688 采集：标题、属性、价格/库存、SKU、主图、详情图与可信的 SKU 图片关联。
+- 数据校验、预览填充、保存草稿和保存后重开核验。
+- Windows 桌面启动器与 CLI；买家和卖家浏览器会话隔离。
 
-## 源码版安装
+视频、抖音、拼多多及其他目标平台尚未实现。多平台方向见 [整理方案](docs/项目整理与多平台演进方案.md)，其中的目标架构不是当前实现。
+
+## Windows 包
+
+使用维护者提供的版本 ZIP，解压后双击 `Commercial1688DraftTool.exe`。源码克隆不包含 `dist` 和 EXE；GitHub 下载地址将在私有仓库建立后补充。
+
+程序不依赖 Python 或 Codex，但需要 Chrome。默认数据目录为 `%LOCALAPPDATA%\Commercial1688DraftTool`，包含配置、商品、浏览器 Profile、草稿台账及日志。
+
+## 源码快速开始
+
+在含 `pyproject.toml` 的仓库根目录运行 Windows PowerShell，建议 Python 3.12：
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -e .
-.venv\Scripts\python -m draft_tool.launcher
+if ($LASTEXITCODE -ne 0) { throw '创建环境失败' }
+.\.venv\Scripts\python.exe -m pip install -e .
+if ($LASTEXITCODE -ne 0) { throw '安装失败' }
+.\.venv\Scripts\python.exe examples\make_offline_example.py
+if ($LASTEXITCODE -ne 0) { throw '生成样例失败' }
+.\.venv\Scripts\python.exe -m draft_tool.cli --product .local\handover-example\product.json --config .local\handover-example\settings.example.json --validate-only
+if ($LASTEXITCODE -ne 0) { throw '样例校验失败' }
 ```
 
-也可以运行 `scripts\install.ps1` 后双击 `launcher.bat`。
+预期 `passed: true`，主图 1 张、详情图 1 张、SKU 2 个、SKU 图片 2 张。该示例只使用本地合成数据；演示配置不能用于真实页面填充。
 
-在 `config/settings.local.json` 中必须填写目标类目和店铺身份校验文本。`store_identity_text` 应是发布页稳定可见且能唯一识别当前店铺的文字，用于防止登录错账号。发货地址匹配文本、运费模板和发货承诺为可选项；包裹重量可配置后备值：优先使用可靠映射的源件重，确认缺重时使用配置值或 1000g；差异重量的身份映射存在歧义时阻止保存。
-
-可选项不代表平台永远允许缺省：如果当前类目或卖家页面把其中某项标记为必填，页面校验仍会阻止保存草稿，并在运行报告中留下原因。已配置的可选项仍执行严格填充和重开核验；不同 SKU 件重只有在目标行可可靠识别时才会逐行填写。
-
-SKU 图片默认采集并尝试按 SKU 行填写。关联优先使用源 SKU ID，缺少 ID 时仅使用完整且唯一的命名规格组合；卖家页面行级控件既可以是文件上传框，也可以是“添加”按钮打开图片空间。两种路径均按 SKU 身份与图片内容核验，不再以文件名或图片数量增加作为成功依据。没有行级控件时报告不支持；上传或提交结果未知时停止自动重试和保存。可在启动器配置中分别关闭 SKU 图片采集或填写；确定的可恢复缺图默认告警，勾选 `require_sku_images` 后阻止保存。重量优先使用源 SKU 件重，目标物流行没有 SKU 编号或货号时会按完整命名规格做唯一匹配；确认缺重的 SKU 使用显式后备值或 1000g，不覆盖其他 SKU 的源件重；差异重量无法可靠映射时报告歧义并阻止保存。视频采集与配置暂未启用。
-
-0.4.19 为待真实页面验收的测试构建：图片空间上传可使用与本次本地文件关联的成功回执，核验平台返回的原图和缩略图，不再要求这些派生图与本地原图字节相同。无可信回执时仍保留严格内容校验。跨次运行尚不持久复用回执，可能重复上传；真实跨域图片空间、完整详情及草稿重开仍待验收。请先使用预览核对页面，不将本次打包视为稳定版验收通过。详见 [版本说明](docs/版本说明-0.4.19.md)。
-
-不同类目的规则放在 `category_rules.by_category.<类目ID>` 下。默认使用商品采集结果中的源叶子类目；如需发布到其他类目，可在配置中填写目标类目，或使用启动器的“捕获目标类目”读取并确认卖家页面中的 `catId`，无需手填数字 ID。采集到的源属性（包括新版页面中的材质、功能、包装方式）会按目标页面的属性标签自动匹配，不需要再把已采集值手工写入规则。源页面 `skuMap`/`skuInfoMap` 中的每个 SKU 价格会单独保留；检测到多个不同 SKU 价格时，发布页自动切换为“按产品规格报价”并逐行填价。每个类目仍可配置 `labels`（补充源商品缺失的属性）、`properties`（按属性 ID 覆盖值）和 `manual_required`（明确要求人工确认的属性 ID）。仅当卖家页面对“是否IP授权”明确说明无授权应选“否”时，源数据缺失该属性才使用此安全默认值；其他缺失必填属性仍会阻止保存。
-
-## 先校验再运行
+真实操作启动桌面界面：
 
 ```powershell
-draft-tool --product "D:\path\product.json" --config config\settings.local.json --validate-only
-draft-tool --product "D:\path\product.json" --config config\settings.local.json --preview-only
-draft-tool --product "D:\path\product.json" --config config\settings.local.json
+.\.venv\Scripts\python.exe -m draft_tool.launcher
 ```
 
-最后一条命令会尝试保存草稿，但不会正式上架。卖家预览/保存遇到登录页时默认不限时等待人工登录，完成后自动回到原页面继续；命令行可用 `--login-timeout-seconds N` 设置超时，`0` 表示不限时。每次运行输出 `quality-gate.json`、`runtime-config.json`、页面报告和截图，可据此捕获并固化当前店铺/类目配置。
+CLI 的 `--validate-only` 只校验本地数据；`--preview-only` 会操作卖家页面并可能上传图片，但不保存草稿；**两者都不指定时会尝试保存草稿**。真实操作命令见操作说明。
 
-默认输出按 `商品ID/运行ID` 隔离，运行状态采用原子写入。同一卖家 Profile 同时只能运行一个任务。工具以“店铺身份 + 源 offer_id”为幂等键记录草稿 ID：有台账时更新原草稿；没有台账但发现同标题旧草稿时停止并要求人工确认，不会删除任何历史草稿。
+## 协作状态
 
-采集入口独立为：
-
-```powershell
-draft-collect --url "https://detail.1688.com/offer/商品ID.html" `
-  --output-dir data\products --profile-dir .local\buyer-browser `
-  --wait-for-challenge 120
-```
-
-买家采集 profile 与卖家发布 profile 必须使用不同目录。
-
-命令行参数可覆盖配置文件，例如首次使用某个类目时：
-
-```powershell
-draft-tool --product "D:\path\product.json" --config config\settings.local.json `
-  --category-id 123456 --category-name "目标叶子类目" `
-  --store-identity-text "目标店铺名称" `
-  --shipping-address "后台已保存地址的稳定匹配文本" `
-  --freight-template-text "目标运费模板名称" `
-  --delivery-promise "48小时发货" --package-weight-grams 1000 --preview-only
-```
-
-确认页面结果后，将 `runtime-config.json` 中的值回填本地配置。该运行记录不会进入版本库。
-
-## 质量门禁
-
-打开卖家后台前会检查：采集校验结果、商品编号、标题长度、目标类目、价格、库存、SKU 结构、素材归属、图片可读性、图片尺寸与大小（包括 SKU 图片）。物流配置按页面实际回显校验；任何确定的错误都会返回非零状态且不启动发布流程。
-
-主图仅从 1688 页面结构化商品图库字段采集，下载只允许 HTTPS 的 1688/阿里图片域名，并限制重定向、响应类型、单文件大小及总量。`product.json` 中的素材必须是当前商品目录下 `assets/` 或 `detail-assets/` 的相对路径；绝对路径、目录穿越和符号链接会被阻断。
-
-页面运行期间还会检查主图实际插入数、SKU 回显、必填属性、详情内容和草稿重新打开后的关键字段。未确认的必填属性会阻断保存。
-
-## 普通启动器适配
-
-已提供 Windows 图形启动器，支持选择商品、采集链接、编辑配置、数据校验、预览填充、保存草稿、查看运行日志和打开数据目录。CLI 仍保持稳定退出码，便于后续接入任务系统。
-
-当前程序不依赖 Codex。商用部署前仍建议配置企业代码签名证书和受控升级源。不要把浏览器 Profile 打进安装包；每个店铺应使用独立 Profile，并由操作者完成登录和验证码。
+按“先私有协作、整理后公开”推进。任务当前仍使用 `.scratch` Markdown；GitHub 协作、CI、发布自动化和许可决策列在路线图中。参与开发不需要 Codex 或个人技能包。
