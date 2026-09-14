@@ -21,7 +21,7 @@ class MediaTests(unittest.TestCase):
                 }]},
             }
             paths, issues = resolve_sku_image_paths(root / "product.json", product)
-            self.assertEqual(paths[specification_key(product["skus"][0]["properties"])], image)
+            self.assertEqual(paths[specification_key(product["skus"][0]["properties"])], image.resolve())
             self.assertEqual(issues, [])
 
     def test_duplicate_sku_identity_with_different_images_is_rejected(self):
@@ -60,7 +60,7 @@ class MediaTests(unittest.TestCase):
 
             paths, issues = resolve_sku_image_paths(root / "product.json", product)
 
-            self.assertEqual(paths, {"A": image, "B": image})
+            self.assertEqual(paths, {"A": image.resolve(), "B": image.resolve()})
             self.assertEqual(issues, [])
 
     def test_conflicting_partial_specification_images_are_rejected(self):
