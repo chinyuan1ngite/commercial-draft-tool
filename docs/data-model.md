@@ -2,6 +2,8 @@
 
 适用基线：0.4.24。本页记录现有读取/写入约定，不是新平台的最终 Schema。完整媒体术语见 [CONTEXT](../CONTEXT.md)。可运行输入见 [离线样例](../examples/README.md)。
 
+1688 实现迁入 `draft_tool.platforms.alibaba1688` 只改变代码位置，不改变本页任何数据约定；旧模块入口继续兼容。
+
 ## 商品目录与 product.json
 
 ```text

@@ -403,10 +403,10 @@ def _dispatch(arguments: list[str]) -> int:
         from draft_tool.cli import main as cli_main
         return cli_main(arguments[1:])
     if arguments and arguments[0] == "--collect":
-        from draft_tool.collector import main as collector_main
+        from draft_tool.platforms.alibaba1688.collector import main as collector_main
         return collector_main(arguments[1:])
     if arguments and arguments[0] == "--capture-category":
-        from draft_tool.category_capture import main as capture_main
+        from draft_tool.platforms.alibaba1688.category_capture import main as capture_main
         return capture_main(arguments[1:])
     if arguments == ["--smoke-test"]:
         paths = initialize_runtime()

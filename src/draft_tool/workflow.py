@@ -28,7 +28,7 @@ def run_save_draft(
     rules_path = output_dir / "category-rules.json"
     atomic_write(rules_path, json.dumps(config.rules_for(target.category_id), ensure_ascii=False, indent=2))
     runtime_product = write_runtime_product(product_path, output_dir / "runtime-product.json")
-    from . import browser_actions
+    from .platforms.alibaba1688 import browser_actions
 
     offer_id = str((gate.get("summary") or {}).get("offer_id") or "")
     store_identity = str(target.store_identity_text or "").strip()

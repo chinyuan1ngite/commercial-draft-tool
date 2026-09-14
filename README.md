@@ -12,7 +12,7 @@
 | 不登录账号，了解输入和校验结果 | [离线样例](examples/README.md) |
 | 安装源码、调试、运行测试 | [开发指南](docs/development.md) |
 | 接手项目、查看待办和历史证据 | [交接清单](docs/handover.md)、[维护指南](docs/maintenance.md)、[路线图](ROADMAP.md) |
-| 理解代码和商品格式 | [当前架构](docs/architecture.md)、[数据说明](docs/data-model.md) |
+| 理解代码和商品格式 | [当前架构](docs/architecture.md)、[数据说明](docs/data-model.md)、[平台模块指南](docs/platform-adapters.md) |
 | 报告问题或提交修改 | [贡献指南](CONTRIBUTING.md) |
 
 ## 当前能力

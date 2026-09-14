@@ -1,6 +1,6 @@
 # 开发指南
 
-在包含 `pyproject.toml` 的仓库根目录运行命令。源码位于 `src/draft_tool`，不依赖上层旧脚本。
+在包含 `pyproject.toml` 的仓库根目录运行命令。源码位于 `src/draft_tool`，不依赖上层旧脚本。1688 页面实现位于 `src/draft_tool/platforms/alibaba1688`，模块职责和兼容入口见 [平台模块指南](platform-adapters.md)。
 
 ## 环境与安装
 
@@ -93,6 +93,8 @@ try {
 先看校验 stdout/`quality-gate.json`，再看 `report.json.result` 和 `fields`。文件对应 [架构地图](architecture.md)，字段见 [数据说明](data-model.md)。
 
 `--validate-only` 不访问页面；预览可能上传媒体；无预览/校验标志时尝试保存。详情 `text_saved` 不代表图片或整个草稿成功。结果未知时先检查平台状态，不能仅增加重试次数。
+
+新增 1688 代码应导入 `draft_tool.platforms.alibaba1688`；根目录下同名旧模块只保留兼容别名。测试可继续使用旧 patch 路径验证历史兼容，也应通过平台命名空间覆盖新实现。
 
 构建前安装锁定的构建依赖：`.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt`，再运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1`。需要可初始化的 Tcl/Tk；生成 ZIP 和对应 `.sha256`。
 

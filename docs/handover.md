@@ -9,6 +9,7 @@
 3. [当前架构](architecture.md) 和 [数据说明](data-model.md)：定位模块与输入/输出。
 4. [兼容性与已知问题](compatibility.md)：区分自动回归和真实验收。
 5. [贡献指南](../CONTRIBUTING.md)、[维护指南](maintenance.md)、[路线图](../ROADMAP.md)：任务、CI、发布与下一步。
+6. [平台模块指南](platform-adapters.md)：1688 实现位置、旧入口兼容和下一次提取方法。
 
 ## 仓库范围
 
@@ -22,6 +23,7 @@
 - 新开发者可先做文档、离线模型/解析和隔离 Chrome 回归，无需索取真实登录会话。
 - 正式发布仍由人工执行，不扩展当前成功状态的含义。
 - GitHub 模板、CI、手动浏览器回归和发布验证已建立；私有远端、分支规则和协作者账号以仓库设置为准。
+- 1688 采集、卖家页、导航和类目捕获已迁入平台命名空间；旧模块仍是同一实现的兼容别名。
 
 ## 历史证据索引
 
@@ -34,6 +36,7 @@
 | 相册/搜索后 iframe 更新 | [验证](../.scratch/detail-picker-frame-refresh/verification.md) |
 | 初始 about:blank → 跨域选图器 | [规格](../.scratch/detail-picker-cross-origin/spec.md)、[验证](../.scratch/detail-picker-cross-origin/verification.md) |
 | 第一批交接资料 | [规格与验收](../.scratch/handover-docs/spec.md) |
+| 1688 平台命名空间提取 | [规格与验收](../.scratch/alibaba1688-platform-package/spec.md) |
 
 历史记录中的本机日志、包和 `.local` 路径不随克隆提供；阅读其中可追溯的结论和测试名称，不依赖作者个人文件。
 
@@ -41,7 +44,7 @@
 
 | 事项 | 当前安排 |
 | --- | --- |
-| 仓库归属/名称 | 项目所有者待确定 |
+| 仓库归属/名称 | 私有仓库 `chinyuan1ngite/commercial-draft-tool`；本地 origin 已配置，推送仍受当前网络阻断 |
 | 总维护者/平台维护者/发布者 | 私有仓库建立时指定具体人员；目前不虚构账号 |
 | GitHub Issue/PR | 模板与规则已纳入仓库；远端建立后 Issue 是任务状态来源 |
 | 开源许可与第三方分发说明 | 公开前由所有者确认 |

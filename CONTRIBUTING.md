@@ -22,6 +22,8 @@
 
 文档修改检查命令、相对链接和样例；纯文档修改不要求重跑全部浏览器测试。商品、SKU、媒体语义变更先读 [CONTEXT](CONTEXT.md) 和 [架构中的 ADR 索引](docs/architecture.md#既有设计约束)。
 
+1688 页面实现放在 `draft_tool.platforms.alibaba1688`。根包中的 `collector`、`browser_actions`、`browser_navigation` 和 `category_capture` 只用于旧入口兼容，不在这些别名文件中添加业务逻辑；平台扩展规则见 [平台模块指南](docs/platform-adapters.md)。
+
 ## 合并前检查
 
 - 实现与验收条件一致，当前能力与规划有明确区分。
